@@ -1,10 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-import yfinance as yf
+import requests
 from datetime import datetime
-import json
 import os
-from scanner import scan_all, analyze_ticker, SP500_TICKERS
+from scanner import scan_all, SP500_TICKERS, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
 app = FastAPI(title="S&P 500 Intelligence API")
@@ -16,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cache simplu în memorie
 _cache = {}
 
 SECTORS = [
@@ -33,21 +31,43 @@ SECTORS = [
     {"name": "Comunicații", "ticker": "XLC", "emoji": "📡"},
 ]
 
-MARKET_TICKERS = ["^GSPC", "^VIX", "^TNX", "DX-Y.NYB"]
+MARKET_TICKERS = {
+    "^GSPC": "SPX",
+    "^VIX": "VIX",
+    "^TNX": "TNX",
+}
 
-def get_quote(ticker: str):
+def get_polygon_quote(ticker: str) -> dict:
+    """Obține quote din Polygon API."""
     try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="2d")
-        if len(hist) < 2:
-            return None
-        prev = float(hist["Close"].iloc[-2])
-        curr = float(hist["Close"].iloc[-1])
-        chg  = round((curr - prev) / prev * 100, 2)
-        vol  = int(hist["Volume"].iloc[-1]) if "Volume" in hist else 0
-        return {"price": round(curr, 2), "change": chg, "prev": round(prev, 2), "volume": vol}
+        url = f"{BASE_URL}/v2/last/trade/{ticker}"
+        res = requests.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8)
+        if res.status_code == 200:
+            data = res.json()
+            price = data.get("results", {}).get("p", 0)
+            return {"price": price, "change": 0}
     except:
-        return None
+        pass
+    return {"price": None, "change": None}
+
+def get_polygon_etf(ticker: str) -> dict:
+    """Obține date ETF sector din Polygon."""
+    try:
+        from datetime import timedelta
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+        res = requests.get(url, params={"apiKey": POLYGON_API_KEY, "sort": "asc"}, timeout=8)
+        if res.status_code == 200:
+            results = res.json().get("results", [])
+            if len(results) >= 2:
+                prev  = results[-2]["c"]
+                curr  = results[-1]["c"]
+                chg   = round((curr - prev) / prev * 100, 2)
+                return {"price": round(curr, 2), "change": chg}
+    except:
+        pass
+    return {"price": None, "change": None}
 
 @app.get("/")
 def root():
@@ -56,18 +76,17 @@ def root():
 @app.get("/api/market")
 def market():
     result = {}
-    for t in MARKET_TICKERS:
-        q = get_quote(t)
-        if q:
-            result[t] = q
+    for key, ticker in MARKET_TICKERS.items():
+        q = get_polygon_etf("SPY") if key == "^GSPC" else {"price": None, "change": None}
+        result[key] = q
     return result
 
 @app.get("/api/sectors")
 def sectors():
     result = []
     for s in SECTORS:
-        q = get_quote(s["ticker"])
-        result.append({**s, **(q or {"price": None, "change": None})})
+        q = get_polygon_etf(s["ticker"])
+        result.append({**s, **q})
     return result
 
 @app.get("/api/macro")
@@ -83,17 +102,11 @@ def macro():
 
 @app.get("/api/early-warning")
 def early_warning(min_score: int = Query(default=3, ge=1, le=5)):
-    """
-    Scanează S&P 500 și returnează companiile cu semnal puternic.
-    min_score: numărul minim de semne simultane (1-5)
-    """
     cache_key = f"ew_{min_score}"
     cached = _cache.get(cache_key)
-
-    # Cache valabil 30 minute
     if cached:
-        age_minutes = (datetime.utcnow() - datetime.fromisoformat(cached["scanned_at"])).seconds / 60
-        if age_minutes < 30:
+        age = (datetime.utcnow() - datetime.fromisoformat(cached["scanned_at"])).seconds / 60
+        if age < 30:
             return cached
 
     results = scan_all(min_score=min_score)
@@ -107,37 +120,28 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=5)):
     _cache[cache_key] = response
     return response
 
-@app.post("/api/early-warning/email")
-def send_email(to: str = Query(..., description="Email destinatar")):
-    """Trimite email cu alertele curente."""
-    cached = _cache.get("ew_4")
-    if not cached:
-        signals = scan_all(min_score=4)
-    else:
-        signals = cached.get("signals", [])
-
-    high_conviction = [s for s in signals if s["score"] >= 4]
-    success = send_alert_email(high_conviction, to)
-    return {"success": success, "sent_to": to, "signals_count": len(high_conviction)}
-
 @app.get("/api/early-warning/scan-now")
 def scan_now(background_tasks: BackgroundTasks):
-    """Pornește un scan proaspăt în background."""
     def do_scan():
         results = scan_all(min_score=3)
         _cache["ew_3"] = {
-            "signals": results,
-            "count": len(results),
+            "signals": results, "count": len(results),
             "scanned": len(SP500_TICKERS),
             "scanned_at": datetime.utcnow().isoformat(),
         }
         high = [r for r in results if r["score"] >= 4]
         _cache["ew_4"] = {**_cache["ew_3"], "signals": high, "count": len(high)}
-
-        # Trimite email automat dacă e configurat
         alert_email = os.getenv("ALERT_EMAIL")
         if alert_email and high:
             send_alert_email(high, alert_email)
 
     background_tasks.add_task(do_scan)
     return {"status": "scan started", "tickers": len(SP500_TICKERS)}
+
+@app.post("/api/early-warning/email")
+def send_email(to: str = Query(...)):
+    cached = _cache.get("ew_4")
+    signals = cached.get("signals", []) if cached else scan_all(min_score=4)
+    high = [s for s in signals if s["score"] >= 4]
+    success = send_alert_email(high, to)
+    return {"success": success, "sent_to": to, "signals_count": len(high)}
