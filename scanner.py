@@ -187,7 +187,7 @@ def scan_all(min_score: int = 3) -> List[Dict]:
         result = analyze_ticker(ticker)
         if result and result["score"] >= min_score:
             results.append(result)
-        time.sleep(0.15)
+        time.sleep(0.5)
 
     results.sort(key=lambda x: (x["score"], x["change_5d"]), reverse=True)
     return results
