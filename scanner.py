@@ -1,5 +1,6 @@
 import requests
 import time
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
@@ -10,50 +11,139 @@ logger = logging.getLogger(__name__)
 POLYGON_API_KEY = "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9"
 BASE_URL = "https://api.polygon.io"
 
-# Lista S&P 500 cu market cap > $30B (hardcoded, actualizată manual periodic)
-SP500_TICKERS = [
-    # Mega cap (>$500B)
-    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","BRK.B","LLY","AVGO",
-    "TSLA","JPM","UNH","V","XOM","COST","MA","PG","JNJ","HD",
-    "ABBV","BAC","MRK","CVX","KO","NFLX","ORCL","CRM","AMD","PEP",
-    # Large cap (>$100B)
-    "TMO","ACN","MCD","ABT","CSCO","WMT","LIN","TXN","ADBE","INTU",
-    "CAT","ISRG","HON","AMGN","IBM","GS","SPGI","BLK","BKNG","AXP",
-    "RTX","GILD","SYK","ELV","MDT","TJX","PLD","VRTX","REGN","PANW",
-    "ADI","LRCX","MU","KLAC","SNPS","CDNS","CI","CVS","MDLZ","ZTS",
-    "BSX","EOG","SO","DUK","ICE","MCO","WM","APD","GD","NOC",
-    "ITW","UBER","ANET","WELL","CRWD","TMUS","NEM","BX","SCHW","DE",
-    "MMC","SHW","CME","PNC","USB","TGT","EMR","ETN","AON","MSI",
-    "MCK","HCA","EW","CTAS","NSC","FDX","FCX","OKE","CCI","PCAR",
-    "AIG","TRV","ALL","PRU","MET","AFL","HIG","STZ","YUM","CMG",
-    "ORLY","AZO","ROST","TJX","DLTR","DG","EXC","PEG","ED","DTE",
-    "NEE","AEP","XEL","WEC","ES","EIX","D","PCG","SRE","CEG",
-    "VZ","T","CMCSA","DIS","NFLX","CHTR","FOX","FOXA","WBD","PARA",
-    "GE","HON","MMM","ITW","EMR","ROK","DOV","PH","IR","AME",
-    "CARR","OTIS","TDG","RTX","LMT","NOC","GD","BA","HII","TXT",
-    "DHR","TMO","A","IDXX","BIO","IQV","CRL","IQVIA","MTD","WAT",
-    "UNH","ELV","HUM","CVS","CI","MOH","CNC","HCA","THC","UHS",
-    "JPM","BAC","WFC","GS","MS","C","BK","STT","SCHW","TFC",
-    "V","MA","AXP","PYPL","FIS","FISV","GPN","SQ","COIN",
-    "AMZN","SHOP","EBAY","ETSY","MELI","JD","PDD","BABA",
-    "GOOGL","META","SNAP","PINS","TWTR","MTCH","IAC",
-    "MSFT","ORCL","SAP","CRM","NOW","WDAY","ADSK","INTU","ANSS","CDNS",
-    "NVDA","AMD","INTC","QCOM","AVGO","TXN","ADI","KLAC","LRCX","AMAT",
-    "AAPL","DELL","HPQ","HPE","NTAP","WDC","STX","PSTG",
-    "NFLX","DIS","CMCSA","CHTR","WBD","PARA","FOX","LYV","IMAX",
-    "PG","KO","PEP","MDLZ","KHC","GIS","CPB","K","CAG","SJM",
-    "JNJ","PFE","MRK","ABBV","BMY","LLY","AMGN","GILD","BIIB","VRTX",
-    "XOM","CVX","COP","EOG","PXD","DVN","MPC","VLO","PSX","HES",
-    "NEM","FCX","BHP","RIO","VALE","AA","CLF","NUE","STLD","RS",
-    "UPS","FDX","JBHT","ODFL","XPO","CHRW","EXPD","GXO","CEVA",
-    "AMT","PLD","EQIX","CCI","SPG","O","WY","AVB","EQR","PSA",
-    "LIN","APD","ECL","SHW","PPG","EMN","CE","DD","DOW","LYB",
-    "CAT","DE","CMI","PCAR","TEL","ROK","EMR","AME","PH","GGG",
-    "MCO","SPGI","ICE","CME","NDAQ","CBOE","FDS","MSCI","BR","WEX",
+# Lista completa S&P 500 (componente oficiale)
+SP500_ALL = [
+    "MMM","AOS","ABT","ABBV","ACN","ADBE","AMD","AES","AFL","A","APD","ABNB","AKAM","ALB","ARE","ALGN",
+    "ALLE","LNT","ALL","GOOGL","GOOG","MO","AMZN","AMCR","AEE","AAL","AEP","AXP","AIG","AMT","AWK","AMP",
+    "AME","AMGN","APH","ADI","ANSS","AON","APA","AAPL","AMAT","APTV","ACGL","ADM","ANET","AJG","AIZ","T",
+    "ATO","ADSK","ADP","AZO","AVB","AVY","AXON","BKR","BALL","BAC","BBWI","BAX","BDX","BRK.B","BBY","BIO",
+    "TECH","BIIB","BLK","BX","BA","BSX","BMY","AVGO","BR","BRO","BLDR","BG","CDNS","CPT","CPB","COF",
+    "CAH","KMX","CCL","CARR","CTLT","CAT","CBOE","CBRE","CDW","CE","COR","CNC","CDAY","CF","CRL","SCHW",
+    "CHTR","CVX","CMG","CB","CHD","CI","CINF","CTAS","CSCO","C","CFG","CLX","CME","CMS","KO","CTSH",
+    "CL","CMCSA","CAG","COP","ED","STZ","CEG","COO","CPRT","GLW","CPAY","CTVA","CSGP","COST","CTRA",
+    "CCI","CSX","CMI","CVS","DHR","DRI","DVA","DAY","DECK","DE","DELL","DAL","DVN","DXCM","FANG","DLR",
+    "DFS","DG","DLTR","D","DPZ","DOV","DOW","DHI","DTE","DUK","DD","EMN","ETN","EBAY","ECL","EIX","EW",
+    "EA","ELV","LLY","EMR","ENPH","ETR","EOG","EPAM","EQT","EFX","EQIX","EQR","ESS","EL","ETSY","EG",
+    "EVRG","ES","EXC","EXPE","EXPD","EXR","XOM","FFIV","FDS","FICO","FAST","FRT","FDX","FIS","FITB",
+    "FSLR","FE","FI","FMC","F","FTNT","FTV","FOXA","FOX","BEN","FCX","GRMN","IT","GE","GEHC","GEV",
+    "GEN","GNRC","GD","GIS","GM","GPC","GILD","GS","HAL","HIG","HAS","HCA","DOC","HSIC","HSY","HES",
+    "HPE","HLT","HOLX","HD","HON","HRL","HST","HWM","HPQ","HUBB","HUM","HBAN","HII","IBM","IEX","IDXX",
+    "ITW","INCY","IR","PODD","INTC","ICE","IFF","IP","IPG","INTU","ISRG","IVZ","INVH","IQV","IRM","JBHT",
+    "JBL","JKHY","J","JNJ","JCI","JPM","K","KVUE","KDP","KEY","KEYS","KMB","KIM","KMI","KLAC","KHC",
+    "KR","LHX","LH","LRCX","LW","LVS","LDOS","LEN","LIN","LYV","LKQ","LMT","L","LOW","LULU","LYB",
+    "MTB","MRO","MPC","MKTX","MAR","MMC","MLM","MAS","MA","MTCH","MKC","MCD","MCK","MDT","MRK","META",
+    "MET","MTD","MGM","MCHP","MU","MSFT","MAA","MRNA","MHK","MOH","TAP","MDLZ","MPWR","MNST","MCO","MS",
+    "MOS","MSI","MSCI","NDAQ","NTAP","NFLX","NEM","NWSA","NWS","NEE","NKE","NI","NDSN","NSC","NTRS",
+    "NOC","NCLH","NRG","NUE","NVDA","NVR","NXPI","ORLY","OXY","ODFL","OMC","ON","OKE","ORCL","OTIS",
+    "PCAR","PKG","PANW","PARA","PH","PAYX","PAYC","PYPL","PNR","PEP","PFE","PCG","PM","PSX","PNW","PNC",
+    "POOL","PPG","PPL","PFG","PG","PGR","PLD","PRU","PEG","PTC","PSA","PHM","PWR","QCOM","DGX","RL",
+    "RJF","RTX","O","REG","REGN","RF","RSG","RMD","RVTY","ROK","ROL","ROP","ROST","RCL","SPGI","CRM",
+    "SBAC","SLB","STX","SRE","NOW","SHW","SPG","SJM","SW","SNA","SOLV","SO","LUV","SWK","SBUX","STT",
+    "STLD","STE","SYK","SYF","SNPS","SYY","TMUS","TROW","TTWO","TPR","TRGP","TGT","TEL","TDY","TFX",
+    "TER","TSLA","TXN","TXT","TMO","TJX","TSCO","TT","TDG","TRV","TRMB","TFC","TYL","TSN","USB","UBER",
+    "UDR","ULTA","UNP","UAL","UPS","URI","UNH","UHS","VLO","VTR","VLTO","VRSN","VRSK","VZ","VRTX","V",
+    "VST","VFC","VTRS","VICI","VMC","WRB","GWW","WAB","WBA","WMT","DIS","WBD","WM","WAT","WEC","WFC",
+    "WELL","WST","WDC","WY","WMB","WTW","WYNN","XEL","XYL","YUM","ZBRA","ZBH","ZTS","SMCI","CRWD","AXON",
 ]
 
-# Deduplicare
-SP500_TICKERS = list(dict.fromkeys(SP500_TICKERS))
+# Fallback - mega caps sigure folosite pana cand filtrul se termina
+FALLBACK_TICKERS = [
+    "NVDA","GOOGL","GOOG","AAPL","MSFT","AMZN","AVGO","TSLA","META","BRK.B",
+    "LLY","JPM","WMT","AMD","INTC","CSCO","QCOM","AMAT","NOW","ADBE",
+    "MA","V","BAC","WFC","GS","MS","BLK","BX","JNJ","UNH",
+    "ABBV","MRK","ABT","TMO","DHR","XOM","CVX","COP","KO","PEP",
+    "MDLZ","PG","PM","GE","HON","CAT","DE","RTX","LMT","LIN","COST","ORCL","CRM","PANW","ANET","SNPS","CDNS","KLAC","LRCX","TXN",
+    "ADI","MU","IBM","APH","AXON","MSI","FI","FIS","ACN","INFY",
+    "SCHW","AXP","CB","MMC","SPGI","MCO","ICE","CME","PNC","C",
+    "ISRG","REGN","VRTX","SYK","BSX","MDT","CI","ELV","HCA","MCK",
+    "EOG","MPC","VLO","PSX","SLB","BA","GEV","ETN","ITW","PH",
+    "UPS","FDX","NSC","CSX","UNP","TT","WM","PGR","ALL","PLD",
+    "AMT","EQIX","LOW","HD","MCD","TJX","ORLY","NKE","CMG","SBUX",
+    "MO","STZ","CL","NUE","APD","SHW","FCX","NEE","SO","DUK","SMCI","CRWD","PLTR","PANW","FTNT","WDAY","ADSK","ADP","TEAM","ANSS",
+    "CTSH","HPQ","DELL","NTAP","STX","MCHP","MPWR","ON","NXPI","FICO",
+    "BK","STT","TFC","USB","COF","AIG","MET","TRV","ALL","HIG",
+    "AON","AJG","AFL","PRU","CBOE","NDAQ","PAYX","BRO","ACGL","WTW",
+    "GILD","BMY","AMGN","SYK","AZO","ROST","YUM","MAR","HLT","BKNG",
+    "DHI","LEN","NVR","DECK","ULTA","F","GM","APTV","RCL","EXPE",
+    "MNST","KMB","KHC","GIS","SYY","CHD","HSY","EL","ADM","DLTR",
+    "CNC","MOH","HUM","CVS","IQV","IDXX","ZTS","BDX","EW","DXCM",
+    "RMD","BAX","ALGN","MET","HWM","TDG","PWR","FAST","CTAS","PCAR",
+    "CMI","LDOS","L3H","GEHC","SOLV","XYL","GWW","WAB","NOC","GD",
+    "ECL","PPG","DOW","DD","LYB","NEM","NUE","STLD","PKG","IP",
+    "AEP","EXC","D","SRE","CEG","PCG","EIX","XEL","WEC","ED",
+    "CCI","SPG","O","WELL","PSA","DLR","VICI","IRM","AVB","EQR",
+]
+
+# Cache global
+_cache = {
+    "tickers": [],
+    "updated_at": None,
+    "status": "pending",  # pending | ready | fallback
+}
+
+
+def _build_filtered_list():
+    """Rulează în background thread la startup."""
+    logger.info(f"Starting market cap filter for {len(SP500_ALL)} tickers...")
+    filtered = []
+    min_cap = 30 * 1_000_000_000
+
+    for i, ticker in enumerate(SP500_ALL):
+        try:
+            url = f"{BASE_URL}/v3/reference/tickers/{ticker}"
+            res = requests.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8)
+            if res.status_code == 200:
+                data = res.json().get("results", {})
+                market_cap = data.get("market_cap", 0) or 0
+                if market_cap >= min_cap:
+                    filtered.append(ticker)
+                    logger.info(f"✓ {ticker} ${market_cap/1e9:.0f}B ({len(filtered)} so far)")
+            elif res.status_code == 429:
+                logger.warning(f"Rate limited at {ticker}, sleeping 60s...")
+                time.sleep(60)
+                # Retry
+                res = requests.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8)
+                if res.status_code == 200:
+                    data = res.json().get("results", {})
+                    market_cap = data.get("market_cap", 0) or 0
+                    if market_cap >= min_cap:
+                        filtered.append(ticker)
+            time.sleep(0.3)
+        except Exception as e:
+            logger.error(f"Error {ticker}: {e}")
+            time.sleep(0.3)
+
+    if filtered:
+        _cache["tickers"] = filtered
+        _cache["updated_at"] = datetime.utcnow()
+        _cache["status"] = "ready"
+        logger.info(f"Filter complete: {len(filtered)} tickers pass market cap >$30B")
+    else:
+        _cache["tickers"] = FALLBACK_TICKERS
+        _cache["updated_at"] = datetime.utcnow()
+        _cache["status"] = "fallback"
+        logger.warning("Filter returned 0 results, using fallback list")
+
+
+def start_background_filter():
+    """Pornește filtrul în background la startup aplicației."""
+    _cache["tickers"] = FALLBACK_TICKERS
+    _cache["status"] = "pending"
+    t = threading.Thread(target=_build_filtered_list, daemon=True)
+    t.start()
+    logger.info("Background market cap filter started")
+
+
+def get_tickers_to_scan() -> List[str]:
+    return _cache["tickers"] if _cache["tickers"] else FALLBACK_TICKERS
+
+
+def get_filter_status() -> dict:
+    return {
+        "status": _cache["status"],
+        "tickers_count": len(_cache["tickers"]),
+        "updated_at": _cache["updated_at"].isoformat() if _cache["updated_at"] else None,
+    }
 
 
 def get_bars(ticker: str, days: int = 120) -> Optional[List]:
@@ -173,12 +263,8 @@ def analyze_ticker(ticker: str) -> Optional[Dict]:
         return None
 
 
-def get_tickers_to_scan() -> List[str]:
-    return SP500_TICKERS
-
-
 def scan_all(min_score: int = 3) -> List[Dict]:
-    tickers = SP500_TICKERS
+    tickers = get_tickers_to_scan()
     results = []
     total = len(tickers)
 
