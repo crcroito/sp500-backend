@@ -1,12 +1,19 @@
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import requests
 from datetime import datetime, timedelta
 import os
-from scanner import scan_all, get_tickers_to_scan, POLYGON_API_KEY, BASE_URL
+from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
-app = FastAPI(title="S&P 500 Intelligence API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Porneste filtrul market cap in background la startup
+    start_background_filter()
+    yield
+
+app = FastAPI(title="S&P 500 Intelligence API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,17 +38,11 @@ SECTORS = [
     {"name": "Comunicații",  "ticker": "XLC",  "emoji": "📡"},
 ]
 
-MARKET_TICKERS = {
-    "^GSPC": "SPX",
-    "^VIX":  "VIX",
-    "^TNX":  "TNX",
-}
-
 
 def get_polygon_etf(ticker: str) -> dict:
     try:
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
         res = requests.get(url, params={"apiKey": POLYGON_API_KEY, "sort": "asc"}, timeout=8)
         if res.status_code == 200:
@@ -61,13 +62,9 @@ def root():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
-@app.get("/api/market")
-def market():
-    result = {}
-    for key in MARKET_TICKERS:
-        q = get_polygon_etf("SPY") if key == "^GSPC" else {"price": None, "change": None}
-        result[key] = q
-    return result
+@app.get("/api/filter-status")
+def filter_status():
+    return get_filter_status()
 
 
 @app.get("/api/sectors")
@@ -107,6 +104,7 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
         "signals": results,
         "count": len(results),
         "scanned": len(tickers),
+        "filter_status": get_filter_status()["status"],
         "min_score": min_score,
         "scanned_at": datetime.utcnow().isoformat(),
     }
@@ -123,6 +121,7 @@ def scan_now(background_tasks: BackgroundTasks):
             "signals": results,
             "count": len(results),
             "scanned": len(tickers),
+            "filter_status": get_filter_status()["status"],
             "scanned_at": datetime.utcnow().isoformat(),
         }
         _cache["ew_3"] = base
@@ -133,7 +132,7 @@ def scan_now(background_tasks: BackgroundTasks):
             send_alert_email(high, alert_email)
 
     background_tasks.add_task(do_scan)
-    return {"status": "scan started"}
+    return {"status": "scan started", "tickers": len(get_tickers_to_scan())}
 
 
 @app.post("/api/early-warning/email")
