@@ -142,3 +142,4 @@ def send_email(to: str = Query(...)):
     high = [s for s in signals if s["score"] >= 4]
     success = send_alert_email(high, to)
     return {"success": success, "sent_to": to, "signals_count": len(high)}
+ 
