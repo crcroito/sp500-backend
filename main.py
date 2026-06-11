@@ -1,9 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
-from scanner import scan_all, get_tickers_to_scan, _filtered_tickers_cache, POLYGON_API_KEY, BASE_URL
+from scanner import scan_all, get_tickers_to_scan, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
 app = FastAPI(title="S&P 500 Intelligence API")
@@ -40,7 +40,6 @@ MARKET_TICKERS = {
 
 def get_polygon_etf(ticker: str) -> dict:
     try:
-        from datetime import timedelta
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
@@ -59,18 +58,13 @@ def get_polygon_etf(ticker: str) -> dict:
 
 @app.get("/")
 def root():
-    cached = _filtered_tickers_cache.get("tickers", [])
-    return {
-        "status": "ok",
-        "time": datetime.utcnow().isoformat(),
-        "tickers": len(cached) if cached else "pending"
-    }
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
 @app.get("/api/market")
 def market():
     result = {}
-    for key, ticker in MARKET_TICKERS.items():
+    for key in MARKET_TICKERS:
         q = get_polygon_etf("SPY") if key == "^GSPC" else {"price": None, "change": None}
         result[key] = q
     return result
@@ -106,8 +100,8 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
         if age < 30:
             return cached
 
-    results = scan_all(min_score=min_score)
     tickers = get_tickers_to_scan()
+    results = scan_all(min_score=min_score)
 
     response = {
         "signals": results,
@@ -132,16 +126,14 @@ def scan_now(background_tasks: BackgroundTasks):
             "scanned_at": datetime.utcnow().isoformat(),
         }
         _cache["ew_3"] = base
-        _cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4])}
-
-        alert_email = os.getenv("ALERT_EMAIL")
         high = [r for r in results if r["score"] >= 4]
+        _cache["ew_4"] = {**base, "signals": high, "count": len(high)}
+        alert_email = os.getenv("ALERT_EMAIL")
         if alert_email and high:
             send_alert_email(high, alert_email)
 
-    tickers = get_tickers_to_scan()
     background_tasks.add_task(do_scan)
-    return {"status": "scan started", "tickers": len(tickers)}
+    return {"status": "scan started"}
 
 
 @app.post("/api/early-warning/email")
