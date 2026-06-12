@@ -9,7 +9,6 @@ from emailer import send_alert_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Porneste filtrul market cap in background la startup
     start_background_filter()
     yield
 
@@ -93,41 +92,39 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
     cache_key = f"ew_{min_score}"
     cached = _cache.get(cache_key)
     if cached:
-        age = (datetime.utcnow() - datetime.fromisoformat(cached["scanned_at"])).seconds / 60
-        if age < 30:
-            return cached
+        return cached
 
+    # Nu e cache — returnează empty, utilizatorul trebuie să apese Scan Acum
     tickers = get_tickers_to_scan()
-    results = scan_all(min_score=min_score)
-
-    response = {
-        "signals": results,
-        "count": len(results),
+    return {
+        "signals": [],
+        "count": 0,
         "scanned": len(tickers),
         "filter_status": get_filter_status()["status"],
         "min_score": min_score,
         "scanned_at": datetime.utcnow().isoformat(),
+        "message": "Apasă Scan Acum pentru a porni scanarea."
     }
-    _cache[cache_key] = response
-    return response
 
 
 @app.get("/api/early-warning/scan-now")
 def scan_now(background_tasks: BackgroundTasks):
     def do_scan():
         tickers = get_tickers_to_scan()
-        results = scan_all(min_score=3)
+        results = scan_all(min_score=2)  # Scanăm de la 2 și filtrăm în cache
         base = {
-            "signals": results,
-            "count": len(results),
+            "signals": [r for r in results if r["score"] >= 2],
+            "count": len([r for r in results if r["score"] >= 2]),
             "scanned": len(tickers),
             "filter_status": get_filter_status()["status"],
             "scanned_at": datetime.utcnow().isoformat(),
         }
-        _cache["ew_3"] = base
-        high = [r for r in results if r["score"] >= 4]
-        _cache["ew_4"] = {**base, "signals": high, "count": len(high)}
+        _cache["ew_2"] = base
+        _cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3])}
+        _cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4])}
+
         alert_email = os.getenv("ALERT_EMAIL")
+        high = [r for r in results if r["score"] >= 4]
         if alert_email and high:
             send_alert_email(high, alert_email)
 
@@ -138,8 +135,6 @@ def scan_now(background_tasks: BackgroundTasks):
 @app.post("/api/early-warning/email")
 def send_email(to: str = Query(...)):
     cached = _cache.get("ew_4")
-    signals = cached.get("signals", []) if cached else scan_all(min_score=4)
-    high = [s for s in signals if s["score"] >= 4]
-    success = send_alert_email(high, to)
-    return {"success": success, "sent_to": to, "signals_count": len(high)}
- 
+    signals = cached.get("signals", []) if cached else []
+    success = send_alert_email(signals, to)
+    return {"success": success, "sent_to": to, "signals_count": len(signals)}
