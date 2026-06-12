@@ -38,7 +38,7 @@ SECTORS = [
 ]
 
 def get_polygon_etf(ticker: str) -> dict:
-    # Încercăm să citim datele direct din cache-ul masiv descărcat în RAM pentru eficiență
+    # Încercăm să citim prețul ETF-ului direct din memoria RAM bulk pentru viteză completă
     try:
         from scanner import _cache as scanner_cache
         global_data = scanner_cache.get("global_market_data", {})
@@ -50,7 +50,7 @@ def get_polygon_etf(ticker: str) -> dict:
     except:
         pass
 
-    # Fallback rețea securizat în caz că cache-ul global nu e gata încă
+    # Backup în caz că serverul abia a pornit și memoria cache nu e gata încă
     try:
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -108,7 +108,7 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
 def scan_now(background_tasks: BackgroundTasks):
     def do_scan():
         tickers = get_tickers_to_scan()
-        results = scan_all(min_score=2) # Scanăm tot și distribuim în cache-uri dedicate
+        results = scan_all(min_score=2)  # Scanăm instaneu din RAM
         
         base = {
             "signals": [r for r in results if r["score"] >= 2],
