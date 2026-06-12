@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 POLYGON_API_KEY = "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9"
 BASE_URL = "https://api.polygon.io"
 
-# Lista completa S&P 500
+# Lista oficiala completa S&P 500
 SP500_ALL = [
     "MMM","AOS","ABT","ABBV","ACN","ADBE","AMD","AES","AFL","A","APD","ABNB","AKAM","ALB","ARE","ALGN",
     "ALLE","LNT","ALL","GOOGL","GOOG","MO","AMZN","AMCR","AEE","AAL","AEP","AXP","AIG","AMT","AWK","AMP",
@@ -46,31 +46,29 @@ SP500_ALL = [
     "WELL","WST","WDC","WY","WMB","WTW","WYNN","XEL","XYL","YUM","ZBRA","ZBH","ZTS","SMCI","CRWD","AXON"
 ]
 
-FALLBACK_TICKERS = [
-    "NVDA","GOOGL","GOOG","AAPL","MSFT","AMZN","AVGO","TSLA","META","BRK.B",
-    "LLY","JPM","WMT","AMD","INTC","CSCO","QCOM","AMAT","NOW","ADBE"
-]
-
-# Cache RAM persistent global
+# Cache RAM Persistent Global
 _cache = {
-    "tickers": SP500_ALL,  # Setat direct pe lista completa la startup ca sa evitam erorile din UI
+    "tickers": SP500_ALL,
     "updated_at": None,
     "status": "pending",
-    "global_market_data": {} # Aici se salveaza istoricul tuturor actiunilor
+    "global_market_data": {}  # Stocare RAM pentru prețurile istorice complete
 }
 
 def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
-    """Descarca Grouped Daily bulk de la Polygon pentru ultimele X zile comerciale."""
+    """
+    Descarcă datele agregate masive zilnice (Grouped Daily) de la Polygon.
+    Scurtează 500 de apeluri de rețea la doar ~45-50 de cereri rapide pentru zile comerciale.
+    """
     historical_data = {}
     current_date = datetime.now()
     dates_to_fetch = []
     
     while len(dates_to_fetch) < days_back:
         current_date -= timedelta(days=1)
-        if current_date.weekday() < 5:  
+        if current_date.weekday() < 5:  # Doar zile de tranzacționare (Luni-Vineri)
             dates_to_fetch.append(current_date.strftime("%Y-%m-%d"))
             
-    dates_to_fetch.reverse()
+    dates_to_fetch.reverse()  # Sincronizare cronologică (vechi -> nou)
     logger.info(f"Downloading historical bulk data for {len(dates_to_fetch)} trading days...")
 
     for date_str in dates_to_fetch:
@@ -85,32 +83,32 @@ def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
                         if ticker not in historical_data:
                             historical_data[ticker] = []
                         historical_data[ticker].append({
-                            "c": bar["c"],
-                            "v": bar["v"]
+                            "c": bar["c"],  # Close
+                            "v": bar["v"]   # Volume
                         })
             elif res.status_code == 429:
-                logger.warning(f"Rate limit hit during bulk download on {date_str}. Waiting 60s...")
+                logger.warning(f"Rate limit hit during history download on {date_str}. Waiting 60s...")
                 time.sleep(60)
             time.sleep(0.15)
         except Exception as e:
-            logger.error(f"Error fetching bulk date {date_str}: {e}")
+            logger.error(f"Error fetching bulk historical date {date_str}: {e}")
             
     return historical_data
 
 def _build_filtered_list():
-    """Ruleaza la boot in background."""
-    logger.info("Pre-loading historical market data into RAM...")
+    """Funcție asincronă pornită în background la startup-ul aplicației."""
+    logger.info("Starting background preload data process...")
+    
+    # 1. Tragem istoricul complet în RAM
     try:
-        # Incarcam datele bulk direct in RAM
         _cache["global_market_data"] = get_global_market_history(days_back=65)
         logger.info("Successfully loaded historical market data into RAM cache.")
     except Exception as e:
         logger.error(f"Failed to preload history cache: {e}")
 
-    # Logica de filtrare bazata pe Market Cap
+    # 2. Rulăm filtrul de Market Cap secundar
     filtered = []
     min_cap = 30 * 1_000_000_000
-    logger.info("Filtering S&P 500 tickers by market cap > $30B...")
     
     for ticker in SP500_ALL:
         try:
@@ -141,13 +139,13 @@ def _build_filtered_list():
         _cache["tickers"] = SP500_ALL
         _cache["status"] = "fallback"
     _cache["updated_at"] = datetime.utcnow()
+    logger.info(f"Filter process finished. Active tickers: {len(_cache['tickers'])}")
 
 def start_background_filter():
     _cache["tickers"] = SP500_ALL
     _cache["status"] = "pending"
     t = threading.Thread(target=_build_filtered_list, daemon=True)
     t.start()
-    logger.info("Background filter and preload process started.")
 
 def get_tickers_to_scan() -> List[str]:
     return _cache["tickers"] if _cache["tickers"] else SP500_ALL
@@ -160,7 +158,7 @@ def get_filter_status() -> dict:
     }
 
 def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
-    """Procesare instanta din RAM."""
+    """Aplică algoritmul tău matematic direct pe array-ul din RAM (Fără rețea)."""
     try:
         if not bars or len(bars) < 15:
             return None
@@ -182,7 +180,7 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
             if above_ma20 and above_ma50 and ma20_rising:
                 upside_ma20 = (current_price / ma20 - 1) * 100
                 trend_strength = True
-                trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%) și MA50, trend up"
+                trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%) și MA50, trend ascendent"
 
         # Semnal 2: Volume Anomaly
         volume_anomaly = False
@@ -194,7 +192,7 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
                 ratio = avg_vol_5 / avg_vol_20
                 if ratio > 1.3:
                     volume_anomaly = True
-                    volume_note = f"Volum mediu 5z = {ratio:.1f}x față de medie 20z"
+                    volume_note = f"Volum nespecific pe termen scurt: 5z = {ratio:.1f}x față de medie 20z"
 
         # Semnal 3: Relative Strength
         relative_strength = False
@@ -205,7 +203,7 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
             ret20 = (closes[-1] / closes[-21] - 1) * 100 if len(closes) >= 21 else 0
             if ret5 > 1 and ret10 > 3 and ret20 > 5:
                 relative_strength = True
-                rs_note = f"+{ret5:.1f}% (5z), +{ret10:.1f}% (10z), +{ret20:.1f}% (20z)"
+                rs_note = f"Impuls: +{ret5:.1f}% (5z), +{ret10:.1f}% (10z), +{ret20:.1f}% (20z)"
 
         # Semnal 4: Institutional Accumulation
         inst_accumulation = False
@@ -216,7 +214,7 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
             if prev20 > 0 and recent10 / prev20 > 1.2:
                 if closes[-1] > closes[-10]:
                     inst_accumulation = True
-                    inst_note = f"Volum 10z = {recent10/prev20:.1f}x față de anterior, preț în creștere"
+                    inst_note = f"Acumulare Fonduri: Volum 10z = {recent10/prev20:.1f}x mai mare cu preț în creștere"
 
         signals = {"trend_strength": trend_strength, "volume_anomaly": volume_anomaly, "relative_strength": relative_strength, "inst_accumulation": inst_accumulation}
         notes = {"trend_strength": trend_note, "volume_anomaly": volume_note, "relative_strength": rs_note, "inst_accumulation": inst_note}
@@ -240,10 +238,11 @@ def scan_all(min_score: int = 3) -> List[Dict]:
     global_market_data = _cache.get("global_market_data", {})
     
     if not global_market_data:
-        logger.warning("RAM Cache empty. Pulling critical market history...")
+        logger.warning("RAM Cache global empty. Executing emergency historic bulk load...")
         global_market_data = get_global_market_history(days_back=55)
         _cache["global_market_data"] = global_market_data
 
+    # Rulare instantanee în buclă locală
     for ticker in tickers:
         bars = global_market_data.get(ticker)
         if not bars:
