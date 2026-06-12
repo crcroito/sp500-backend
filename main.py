@@ -2,13 +2,14 @@ from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Pornește pre-încărcarea istoricului în RAM și filtrul la pornirea serverului Railway
     start_background_filter()
     yield
 
@@ -40,6 +41,21 @@ SECTORS = [
 
 def get_polygon_etf(ticker: str) -> dict:
     try:
+        # Folosim cache-ul intern descărcat global în scanner dacă este disponibil, 
+        # ca să nu mai facem request-uri în plus pentru ETF-uri
+        from scanner import _cache as scanner_cache
+        global_data = scanner_cache.get("global_market_data", {})
+        if ticker in global_data and len(global_data[ticker]) >= 2:
+            prev = global_data[ticker][-2]["c"]
+            curr = global_data[ticker][-1]["c"]
+            chg = round((curr - prev) / prev * 100, 2)
+            return {"price": round(curr, 2), "change": chg}
+    except:
+        pass
+    
+    # Fallback la request-ul tău original dacă serverul abia a pornit
+    try:
+        from datetime import timedelta
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
@@ -94,7 +110,6 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
     if cached:
         return cached
 
-    # Nu e cache — returnează empty, utilizatorul trebuie să apese Scan Acum
     tickers = get_tickers_to_scan()
     return {
         "signals": [],
@@ -111,7 +126,9 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
 def scan_now(background_tasks: BackgroundTasks):
     def do_scan():
         tickers = get_tickers_to_scan()
-        results = scan_all(min_score=2)  # Scanăm de la 2 și filtrăm în cache
+        # Scanăm tot din RAM (acum va dura sub 1 secundă)
+        results = scan_all(min_score=2)  
+        
         base = {
             "signals": [r for r in results if r["score"] >= 2],
             "count": len([r for r in results if r["score"] >= 2]),
@@ -129,6 +146,7 @@ def scan_now(background_tasks: BackgroundTasks):
             send_alert_email(high, alert_email)
 
     background_tasks.add_task(do_scan)
+    # Returnăm numărul curent de tickere din cache ca să vezi progresul în UI (va trece de la 13 la cele >$30B)
     return {"status": "scan started", "tickers": len(get_tickers_to_scan())}
 
 
