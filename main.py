@@ -2,14 +2,13 @@ from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Pornește pre-încărcarea istoricului în RAM și filtrul la pornirea serverului Railway
     start_background_filter()
     yield
 
@@ -38,11 +37,9 @@ SECTORS = [
     {"name": "Comunicații",  "ticker": "XLC",  "emoji": "📡"},
 ]
 
-
 def get_polygon_etf(ticker: str) -> dict:
+    # Încercăm să citim datele direct din cache-ul masiv descărcat în RAM pentru eficiență
     try:
-        # Folosim cache-ul intern descărcat global în scanner dacă este disponibil, 
-        # ca să nu mai facem request-uri în plus pentru ETF-uri
         from scanner import _cache as scanner_cache
         global_data = scanner_cache.get("global_market_data", {})
         if ticker in global_data and len(global_data[ticker]) >= 2:
@@ -52,12 +49,11 @@ def get_polygon_etf(ticker: str) -> dict:
             return {"price": round(curr, 2), "change": chg}
     except:
         pass
-    
-    # Fallback la request-ul tău original dacă serverul abia a pornit
+
+    # Fallback rețea securizat în caz că cache-ul global nu e gata încă
     try:
-        from datetime import timedelta
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
         url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
         res = requests.get(url, params={"apiKey": POLYGON_API_KEY, "sort": "asc"}, timeout=8)
         if res.status_code == 200:
@@ -71,16 +67,13 @@ def get_polygon_etf(ticker: str) -> dict:
         pass
     return {"price": None, "change": None}
 
-
 @app.get("/")
 def root():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-
 @app.get("/api/filter-status")
 def filter_status():
     return get_filter_status()
-
 
 @app.get("/api/sectors")
 def sectors():
@@ -90,18 +83,12 @@ def sectors():
         result.append({**s, **q})
     return result
 
-
 @app.get("/api/macro")
 def macro():
     return {
-        "fed_rate": "5.25-5.50%",
-        "cpi": "3.2%",
-        "core_pce": "2.8%",
-        "unemployment": "3.9%",
-        "source": "FRED / BLS",
-        "updated": datetime.utcnow().isoformat()
+        "fed_rate": "5.25-5.50%", "cpi": "3.2%", "core_pce": "2.8%", "unemployment": "3.9%",
+        "source": "FRED / BLS", "updated": datetime.utcnow().isoformat()
     }
-
 
 @app.get("/api/early-warning")
 def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
@@ -112,22 +99,16 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
 
     tickers = get_tickers_to_scan()
     return {
-        "signals": [],
-        "count": 0,
-        "scanned": len(tickers),
-        "filter_status": get_filter_status()["status"],
-        "min_score": min_score,
-        "scanned_at": datetime.utcnow().isoformat(),
-        "message": "Apasă Scan Acum pentru a porni scanarea."
+        "signals": [], "count": 0, "scanned": len(tickers),
+        "filter_status": get_filter_status()["status"], "min_score": min_score,
+        "scanned_at": datetime.utcnow().isoformat(), "message": "Apasă Scan Acum pentru a porni scanarea în RAM."
     }
-
 
 @app.get("/api/early-warning/scan-now")
 def scan_now(background_tasks: BackgroundTasks):
     def do_scan():
         tickers = get_tickers_to_scan()
-        # Scanăm tot din RAM (acum va dura sub 1 secundă)
-        results = scan_all(min_score=2)  
+        results = scan_all(min_score=2) # Scanăm tot și distribuim în cache-uri dedicate
         
         base = {
             "signals": [r for r in results if r["score"] >= 2],
@@ -146,9 +127,7 @@ def scan_now(background_tasks: BackgroundTasks):
             send_alert_email(high, alert_email)
 
     background_tasks.add_task(do_scan)
-    # Returnăm numărul curent de tickere din cache ca să vezi progresul în UI (va trece de la 13 la cele >$30B)
     return {"status": "scan started", "tickers": len(get_tickers_to_scan())}
-
 
 @app.post("/api/early-warning/email")
 def send_email(to: str = Query(...)):
