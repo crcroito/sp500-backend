@@ -92,8 +92,9 @@ def macro():
 
 @app.get("/api/early-warning")
 def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
+    from scanner import _cache as scanner_cache
     cache_key = f"ew_{min_score}"
-    cached = _cache.get(cache_key)
+    cached = scanner_cache.get(cache_key)
     if cached:
         return cached
 
@@ -101,7 +102,7 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
     return {
         "signals": [], "count": 0, "scanned": len(tickers),
         "filter_status": get_filter_status()["status"], "min_score": min_score,
-        "scanned_at": datetime.utcnow().isoformat(), "message": "Apasă Scan Acum pentru a porni scanarea în RAM."
+        "scanned_at": datetime.utcnow().isoformat(), "message": "Scanarea pornește automat după încărcarea filtrului."
     }
 
 @app.get("/api/early-warning/scan-now")
@@ -110,16 +111,12 @@ def scan_now(background_tasks: BackgroundTasks):
         tickers = get_tickers_to_scan()
         results = scan_all(min_score=2)  # Scanăm instaneu din RAM
         
-        base = {
-            "signals": [r for r in results if r["score"] >= 2],
-            "count": len([r for r in results if r["score"] >= 2]),
-            "scanned": len(tickers),
-            "filter_status": get_filter_status()["status"],
-            "scanned_at": datetime.utcnow().isoformat(),
-        }
-        _cache["ew_2"] = base
-        _cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3])}
-        _cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4])}
+        from scanner import _cache as scanner_cache
+        now = datetime.utcnow().isoformat()
+        base = {"scanned": len(tickers), "filter_status": get_filter_status()["status"], "scanned_at": now}
+        scanner_cache["ew_2"] = {**base, "signals": results, "count": len(results), "min_score": 2}
+        scanner_cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3]), "min_score": 3}
+        scanner_cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4]), "min_score": 4}
 
         alert_email = os.getenv("ALERT_EMAIL")
         high = [r for r in results if r["score"] >= 4]
