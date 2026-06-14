@@ -86,10 +86,7 @@ def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
                             "c": bar["c"],  # Close
                             "v": bar["v"]   # Volume
                         })
-            elif res.status_code == 429:
-                logger.warning(f"Rate limit hit during history download on {date_str}. Waiting 60s...")
-                time.sleep(60)
-            time.sleep(0.15)
+            time.sleep(12)
         except Exception as e:
             logger.error(f"Error fetching bulk historical date {date_str}: {e}")
             
@@ -140,16 +137,6 @@ def _build_filtered_list():
         _cache["status"] = "fallback"
     _cache["updated_at"] = datetime.utcnow()
     logger.info(f"Filter process finished. Active tickers: {len(_cache['tickers'])}")
-
-    # Auto-scan dupa ce filtrul termina
-    logger.info("Starting auto-scan after filter...")
-    results = scan_all(min_score=2)
-    now = datetime.utcnow().isoformat()
-    base = {"scanned": len(_cache["tickers"]), "filter_status": _cache["status"], "scanned_at": now}
-    _cache["ew_2"] = {**base, "signals": results, "count": len(results), "min_score": 2}
-    _cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3]), "min_score": 3}
-    _cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4]), "min_score": 4}
-    logger.info(f"Auto-scan complete: {len(results)} signals found")
 
 def start_background_filter():
     _cache["tickers"] = SP500_ALL
