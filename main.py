@@ -1,16 +1,19 @@
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import requests
 from datetime import datetime, timedelta
 import os
-from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, POLYGON_API_KEY, BASE_URL
+from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, start_daily_refresh, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
-app = FastAPI(title="S&P 500 Intelligence API")
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     start_background_filter()
+    start_daily_refresh()
+    yield
+
+app = FastAPI(title="S&P 500 Intelligence API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,15 +75,6 @@ def root():
 @app.get("/api/filter-status")
 def filter_status():
     return get_filter_status()
-
-@app.get("/api/market")
-def market():
-    tickers = {"SPY": "S&P 500", "QQQ": "NASDAQ", "DIA": "DOW"}
-    result = {}
-    for ticker, name in tickers.items():
-        q = get_polygon_etf(ticker)
-        result[ticker] = {"name": name, **q}
-    return result
 
 @app.get("/api/sectors")
 def sectors():
