@@ -1,6 +1,7 @@
 import requests
 import time
 import threading
+import schedule
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
@@ -86,7 +87,7 @@ def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
                             "c": bar["c"],  # Close
                             "v": bar["v"]   # Volume
                         })
-            time.sleep(12)
+                        time.sleep(12)
         except Exception as e:
             logger.error(f"Error fetching bulk historical date {date_str}: {e}")
             
@@ -143,6 +144,28 @@ def start_background_filter():
     _cache["status"] = "pending"
     t = threading.Thread(target=_build_filtered_list, daemon=True)
     t.start()
+
+def _daily_refresh():
+    """Refresh zilnic al datelor - rulează la 22:00 ora UTC (după închiderea pieței US)."""
+    logger.info("Starting daily data refresh...")
+    _build_filtered_list()
+    logger.info("Daily refresh complete.")
+
+
+def _schedule_runner():
+    """Thread care verifică și rulează task-urile schedule."""
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
+def start_daily_refresh():
+    """Pornește scheduler-ul pentru refresh zilnic la 22:00 UTC."""
+    schedule.every().day.at("22:00").do(_daily_refresh)
+    t = threading.Thread(target=_schedule_runner, daemon=True)
+    t.start()
+    logger.info("Daily refresh scheduled at 22:00 UTC")
+
 
 def get_tickers_to_scan() -> List[str]:
     return _cache["tickers"] if _cache["tickers"] else SP500_ALL
