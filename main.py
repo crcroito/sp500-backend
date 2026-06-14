@@ -1,18 +1,16 @@
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import requests
 from datetime import datetime, timedelta
 import os
 from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, POLYGON_API_KEY, BASE_URL
 from emailer import send_alert_email
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    start_background_filter()
-    yield
+app = FastAPI(title="S&P 500 Intelligence API")
 
-app = FastAPI(title="S&P 500 Intelligence API", lifespan=lifespan)
+@app.on_event("startup")
+async def startup_event():
+    start_background_filter()
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +73,15 @@ def root():
 def filter_status():
     return get_filter_status()
 
+@app.get("/api/market")
+def market():
+    tickers = {"SPY": "S&P 500", "QQQ": "NASDAQ", "DIA": "DOW"}
+    result = {}
+    for ticker, name in tickers.items():
+        q = get_polygon_etf(ticker)
+        result[ticker] = {"name": name, **q}
+    return result
+
 @app.get("/api/sectors")
 def sectors():
     result = []
@@ -92,9 +99,8 @@ def macro():
 
 @app.get("/api/early-warning")
 def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
-    from scanner import _cache as scanner_cache
     cache_key = f"ew_{min_score}"
-    cached = scanner_cache.get(cache_key)
+    cached = _cache.get(cache_key)
     if cached:
         return cached
 
@@ -102,7 +108,7 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
     return {
         "signals": [], "count": 0, "scanned": len(tickers),
         "filter_status": get_filter_status()["status"], "min_score": min_score,
-        "scanned_at": datetime.utcnow().isoformat(), "message": "Scanarea pornește automat după încărcarea filtrului."
+        "scanned_at": datetime.utcnow().isoformat(), "message": "Apasă Scan Acum pentru a porni scanarea în RAM."
     }
 
 @app.get("/api/early-warning/scan-now")
@@ -111,12 +117,16 @@ def scan_now(background_tasks: BackgroundTasks):
         tickers = get_tickers_to_scan()
         results = scan_all(min_score=2)  # Scanăm instaneu din RAM
         
-        from scanner import _cache as scanner_cache
-        now = datetime.utcnow().isoformat()
-        base = {"scanned": len(tickers), "filter_status": get_filter_status()["status"], "scanned_at": now}
-        scanner_cache["ew_2"] = {**base, "signals": results, "count": len(results), "min_score": 2}
-        scanner_cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3]), "min_score": 3}
-        scanner_cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4]), "min_score": 4}
+        base = {
+            "signals": [r for r in results if r["score"] >= 2],
+            "count": len([r for r in results if r["score"] >= 2]),
+            "scanned": len(tickers),
+            "filter_status": get_filter_status()["status"],
+            "scanned_at": datetime.utcnow().isoformat(),
+        }
+        _cache["ew_2"] = base
+        _cache["ew_3"] = {**base, "signals": [r for r in results if r["score"] >= 3], "count": len([r for r in results if r["score"] >= 3])}
+        _cache["ew_4"] = {**base, "signals": [r for r in results if r["score"] >= 4], "count": len([r for r in results if r["score"] >= 4])}
 
         alert_email = os.getenv("ALERT_EMAIL")
         high = [r for r in results if r["score"] >= 4]
