@@ -33,6 +33,13 @@ SP500_ALL = [
 ]
 SP500_SET = set(SP500_ALL)
 
+# ETF-uri de sectoare si piata (descarcate in RAM dar nu scanate)
+ETF_TICKERS = [
+    "XLK", "XLF", "XLV", "XLE", "XLY", "XLP", "XLI", "XLRE", "XLU", "XLB", "XLC",
+    "SPY", "VIXY", "TLT", "UUP"
+]
+ALL_TICKERS_SET = set(SP500_ALL) | set(ETF_TICKERS)
+
 def get_tickers_to_scan() -> list:
     tickers = _cache.get("tickers", [])
     if not tickers:
@@ -111,7 +118,7 @@ async def build_or_extend_ram_history(target_days: int = 65):
                 
                 for res in data["results"]:
                     ticker = res.get("T")
-                    if ticker in SP500_SET:
+                    if ticker in ALL_TICKERS_SET:
                         if ticker not in global_market_data:
                             global_market_data[ticker] = []
                         
@@ -146,7 +153,7 @@ async def do_incremental_refresh():
             
             for res in data["results"]:
                 ticker = res.get("T")
-                if ticker in SP500_SET:
+                if ticker in ALL_TICKERS_SET:
                     if ticker not in global_market_data:
                         global_market_data[ticker] = []
                         
