@@ -6,7 +6,7 @@ import asyncio
 import threading
 from datetime import datetime, timedelta
 
-# Configurare Logging profesional
+# Configurare Logging profesional pentru monitorizarea în Railway Log
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("scanner")
 
@@ -16,11 +16,12 @@ BASE_URL = "https://api.polygon.io"
 # Cache-ul centralizat din memoria RAM
 _cache = {
     "tickers": [],
-    "status": "ready",  # 🚨 SCHIMBARE CRITICĂ: Pornim direct ca 'ready' pentru ca Railway să ne dea status verde instant!
-    "global_market_data": {},  
+    "status": "ready",  # Setat direct 'ready' pentru conformitate instantanee cu serviciile Cloud
+    "global_market_data": {},  # Structura: { "AAPL": [{"t":..., "c":...}, ... ] }
     "updated_at": datetime.utcnow()
 }
 
+# Lista companiilor monitorizate (S&P 500 selectat)
 SP500_ALL = [
     "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "GOOG", "META", "BRK.B", "LLY", "AVGO",
     "JPM", "TSLA", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "JNJ",
@@ -46,6 +47,7 @@ def get_filter_status() -> dict:
     }
 
 async def fetch_bulk_day_data(client: httpx.AsyncClient, date_str: str) -> dict:
+    """Interoghează API-ul Polygon pentru datele agregate ale întregii piețe într-o zi."""
     url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
     params = {"apiKey": POLYGON_API_KEY, "adjusted": "true"}
     
@@ -55,7 +57,7 @@ async def fetch_bulk_day_data(client: httpx.AsyncClient, date_str: str) -> dict:
             if response.status_code == 200:
                 return response.json()
             elif response.status_code == 429:
-                logger.warning(f"Rate limit (429) la Polygon pentru data {date_str}. Reîncercăm în 65s...")
+                logger.warning(f"Rate limit (429) detectat pentru data {date_str}. Așteptăm 65s...")
                 await asyncio.sleep(65)
             else:
                 await asyncio.sleep(2)
@@ -65,17 +67,21 @@ async def fetch_bulk_day_data(client: httpx.AsyncClient, date_str: str) -> dict:
     return {}
 
 async def build_or_extend_ram_history(target_days: int = 65):
-    """Verifică memoria RAM și completează doar istoricul lipsă."""
+    """
+    Sincronizare diferențială inteligentă.
+    Măsoară ce existea deja în RAM și trage strict zilele lipsă din trecut.
+    """
     global_market_data = _cache.get("global_market_data", {})
     current_ram_days = len(global_market_data.get("AAPL", []))
     
     if current_ram_days >= target_days:
-        logger.info(f"RAM-ul conține deja {current_ram_days} zile. Skip download istoric.")
+        logger.info(f"RAM-ul are deja {current_ram_days} zile stocate. Skip descărcare istorică.")
         return
 
     needed_days = target_days - current_ram_days
-    logger.info(f"RAM-ul are {current_ram_days} zile. Începe descărcarea pentru restul de {needed_days} zile...")
+    logger.info(f"RAM-ul conține {current_ram_days} zile. Pornim completarea pentru restul de {needed_days} zile...")
 
+    # Set de amprente de timp (timestamps) pentru eliminarea duplicatelor zilnice
     existing_timestamps = {bar["t"] for bar in global_market_data.get("AAPL", [])}
 
     async with httpx.AsyncClient() as client:
@@ -87,7 +93,7 @@ async def build_or_extend_ram_history(target_days: int = 65):
             target_date = current_date - timedelta(days=days_checked)
             days_checked += 1
             
-            if target_date.weekday() >= 5:
+            if target_date.weekday() >= 5:  # Sărim peste sâmbătă și duminică
                 continue
                 
             date_str = target_date.strftime("%Y-%m-%d")
@@ -96,11 +102,12 @@ async def build_or_extend_ram_history(target_days: int = 65):
             if data and data.get("results"):
                 first_result_t = data["results"][0].get("t") if data["results"] else None
                 
+                # Dacă ziua din trecut există deja în RAM, o ignorăm și mergem mai departe în spate
                 if first_result_t and first_result_t in existing_timestamps:
                     continue
 
                 downloaded_days += 1
-                logger.info(f"[{downloaded_days}/{needed_days}] Descarcat ziua lipsă: {date_str}. Pauză 17s...")
+                logger.info(f"[{downloaded_days}/{needed_days}] S-a sincronizat ziua istorică lipsă: {date_str}. Pauză API 17s...")
                 
                 for res in data["results"]:
                     ticker = res.get("T")
@@ -118,18 +125,21 @@ async def build_or_extend_ram_history(target_days: int = 65):
             else:
                 await asyncio.sleep(1)
                 
+    # Sortăm cronologic datele aduse din trecut pentru ca formulele MA50 să ruleze corect
     for t in global_market_data:
         global_market_data[t].sort(key=lambda x: x["t"])
         
     _cache["global_market_data"] = global_market_data
-    logger.info(f"Sincronizare completă! Total zile în RAM: {len(_cache['global_market_data'].get('AAPL', []))}")
+    logger.info(f"Sincronizare finalizată! Istoric consolidat în RAM: {len(_cache['global_market_data'].get('AAPL', []))} zile.")
 
 async def do_incremental_refresh():
+    """Actualizează memoria RAM cu lumânarea zilei curente la închiderea pieței (ora 22:00 UTC)."""
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    logger.info(f"Refresh incremental zilnic la 22:00 pentru: {today_str}")
+    logger.info(f"Rulare actualizare incrementală zilnică: {today_str}")
     
     async with httpx.AsyncClient() as client:
         data = await fetch_bulk_day_data(client, today_str)
+        
         if data and data.get("results"):
             global_market_data = _cache.get("global_market_data", {})
             added_count = 0
@@ -148,39 +158,40 @@ async def do_incremental_refresh():
                         })
                         added_count += 1
                     
+                    # FEREASTRĂ GLISANTĂ: Dacă depășim 65 de zile stocate, aruncăm cea mai veche zi din RAM
                     if len(global_market_data[ticker]) > 65:
                         global_market_data[ticker].pop(0)
             
-            logger.info(f"Update incremental finalizat pentru {added_count} companii.")
+            logger.info(f"Actualizare incrementală completă. Adăugat date noi pentru {added_count} companii.")
             _cache["tickers"] = [t for t in SP500_ALL if t in global_market_data and len(global_market_data[t]) >= 10]
             _cache["updated_at"] = datetime.utcnow()
 
 def _build_filtered_list():
-    """Funcție executată în fundal. Introduce o amânare intenționată ca să treacă de Railway."""
-    logger.info("Aplicația a pornit! Așteptăm 10 secunde de siguranță pentru a trece de Healthcheck-ul Railway...")
-    time.sleep(10)  # 🚨 TRICUL DE SALVARE: Lăsăm Railway să vadă serverul pornit înainte să facem cereri API!
-    
+    """Execuție din thread separat pentru a lăsa FastAPI liber în rețea."""
+    logger.info("Thread secundar activat. Pornim colectarea datelor istorice...")
     _cache["status"] = "updating"
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(build_or_extend_ram_history(target_days=65))
     except Exception as e:
-        logger.error(f"Eroare la extinderea cache-ului: {e}")
+        logger.error(f"Eroare în execuția threadului de sincronizare: {e}")
 
+    # Permitem scanarea activă doar pentru companiile care au acumulat pragul minim de date de analiză
     filtered = [t for t in SP500_ALL if t in _cache["global_market_data"] and len(_cache["global_market_data"][t]) >= 55]
     _cache["tickers"] = filtered
     _cache["status"] = "ready"
     _cache["updated_at"] = datetime.utcnow()
 
 def start_background_filter():
-    """Pornește thread-ul fără să blocheze FastAPI structural."""
+    """Lansează threadul asincron de fundal."""
     t = threading.Thread(target=_build_filtered_list, daemon=True)
     t.start()
 
 def start_daily_refresh():
+    """Planificatorul intern de timp (Cron-Job în RAM) pentru ora 22:00 UTC."""
     def run_scheduler():
-        logger.info("Planificatorul zilnic pornit pentru 22:00 UTC")
+        logger.info("Planificator incremental inițializat (Așteaptă ora 22:00 UTC)")
         while True:
             now = datetime.utcnow()
             target = now.replace(hour=22, minute=0, second=0, microsecond=0)
@@ -191,6 +202,7 @@ def start_daily_refresh():
             time.sleep(sleep_seconds)
             
             if datetime.utcnow().weekday() < 5:
+                logger.info("Ceasul a atins 22:00 UTC. Rulăm adăugarea automată a lumânării de azi...")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(do_incremental_refresh())
@@ -199,7 +211,10 @@ def start_daily_refresh():
     t.start()
 
 def scan_all(min_score: int = 2) -> list:
-    """Sistem de scanare Early Warning 65 zile."""
+    """
+    SISTEMUL MATEMATIC DE FILTRARE (EARLY WARNING)
+    Analizează istoricul curat de 65 de zile direct din memoria RAM.
+    """
     tickers = get_tickers_to_scan()
     global_data = _cache.get("global_market_data", {})
     results = []
@@ -220,20 +235,20 @@ def scan_all(min_score: int = 2) -> list:
             score = 0
             reasons = []
 
-            # Pilon 1: MA50 Breakout
+            # 🚨 PILON 1: Trend Strength - Breakout confirmat peste MA50 (Baza Instituțională)
             ma50 = sum(prices[-50:]) / 50
-            if curr_price > (ma50 * 1.015):  
+            if curr_price > (ma50 * 1.015):  # Minim 1.5% peste media mobilă de 50 de zile
                 score += 1
                 reasons.append(f"Trend Structural Puternic (Preț cu >1.5% peste MA50)")
 
-            # Pilon 2: Volume Anomaly vs MA20 Vol
+            # 🚨 PILON 2: Volume Anomaly - Explozie de volum raportată la MA20 Volum (o lună de trading)
             avg_vol_20d = sum(volumes[-21:-1]) / 20
-            if avg_vol_20d > 0 and curr_vol > (avg_vol_20d * 1.5):  
+            if avg_vol_20d > 0 and curr_vol > (avg_vol_20d * 1.5):  # Volum cu minimum +50% peste medie
                 percent_gain = round((curr_vol / avg_vol_20d - 1) * 100)
                 score += 1
                 reasons.append(f"Volum Instituțional Anomal (+{percent_gain}% vs MA20 Vol)")
 
-            # Pilon 3: Medium-Term Momentum (15z / 30z)
+            # 🚨 PILON 3: Medium-Term Momentum - Confirmare Higher Highs structural pe 15 și 30 de zile în urmă
             price_15d_ago = prices[-16]
             price_30d_ago = prices[-31]
             if curr_price > price_15d_ago and price_15d_ago > price_30d_ago:
@@ -241,7 +256,7 @@ def scan_all(min_score: int = 2) -> list:
                 total_gain_30d = round(((curr_price - price_30d_ago) / price_30d_ago) * 100, 1)
                 reasons.append(f"Momentum Susținut pe Termen Mediu (+{total_gain_30d}% în 30z)")
 
-            # Pilon 4: Institutional Accumulation (10 zile)
+            # 🚨 PILON 4: Institutional Accumulation - Amprenta Smart Money pe ultimele 10 zile
             green_days_vol = []
             red_days_vol = []
             for i in range(-10, 0):
@@ -259,6 +274,7 @@ def scan_all(min_score: int = 2) -> list:
                 score += 1
                 reasons.append("Acumulare Instituțională (Zilele de creștere au volume net superioare)")
 
+            # Construim rezultatul dacă trece de filtrul scorului minim selectat
             if score >= min_score:
                 price_day_change = ((curr_price - prev_price) / prev_price) * 100
                 results.append({
@@ -273,5 +289,6 @@ def scan_all(min_score: int = 2) -> list:
         except Exception as e:
             continue
 
+    # Sortare: Scorul cel mai mare primul, iar la scoruri egale, sortare după randamentul zilnic (%)
     results.sort(key=lambda x: (x["score"], x["change_percent"]), reverse=True)
     return results
