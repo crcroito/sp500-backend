@@ -50,6 +50,7 @@ SECTORS = [
 ]
 
 def get_polygon_etf(ticker: str) -> dict:
+    # 1. Încercăm exclusiv să citim prețul ETF-ului din memoria RAM bulk (dacă s-a terminat sincronizarea)
     try:
         from scanner import _cache as scanner_cache
         global_data = scanner_cache.get("global_market_data", {})
@@ -61,20 +62,8 @@ def get_polygon_etf(ticker: str) -> dict:
     except:
         pass
 
-    try:
-        end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
-        url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
-        res = requests.get(url, params={"apiKey": POLYGON_API_KEY, "sort": "asc"}, timeout=8)
-        if res.status_code == 200:
-            results = res.json().get("results", [])
-            if len(results) >= 2:
-                prev = results[-2]["c"]
-                curr = results[-1]["c"]
-                chg = round((curr - prev) / prev * 100, 2)
-                return {"price": round(curr, 2), "change": chg}
-    except:
-        pass
+    # 2. Protecție: NU mai facem cereri live pe rețea în timpul startup-ului 
+    # pentru a nu consuma limita de 5 cereri/minut din cauza spam-ului din frontend.
     return {"price": None, "change": None}
 
 @app.get("/")
@@ -153,4 +142,4 @@ def send_email(to: str = Query(...)):
     cached = _cache.get("ew_4")
     signals = cached.get("signals", []) if cached else []
     success = send_alert_email(signals, to)
-    return {"success": success, "sent_to": to, "signals_count": len(signals)} 
+    return {"success": success, "sent_to": to, "signals_count": len(signals)}
