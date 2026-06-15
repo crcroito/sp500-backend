@@ -153,4 +153,4 @@ def send_email(to: str = Query(...)):
     cached = _cache.get("ew_4")
     signals = cached.get("signals", []) if cached else []
     success = send_alert_email(signals, to)
-    return {"success": success, "sent_to": to, "signals_count": len(signals)}
+    return {"success": success, "sent_to": to, "signals_count": len(signals)} 
