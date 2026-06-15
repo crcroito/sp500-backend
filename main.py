@@ -39,7 +39,6 @@ SECTORS = [
 ]
 
 def get_polygon_etf(ticker: str) -> dict:
-    # Încercăm să citim prețul ETF-ului direct din memoria RAM bulk pentru viteză completă
     try:
         from scanner import _cache as scanner_cache
         global_data = scanner_cache.get("global_market_data", {})
@@ -51,7 +50,6 @@ def get_polygon_etf(ticker: str) -> dict:
     except:
         pass
 
-    # Backup în caz că serverul abia a pornit și memoria cache nu e gata încă
     try:
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -75,6 +73,16 @@ def root():
 @app.get("/api/filter-status")
 def filter_status():
     return get_filter_status()
+
+# REPARARE MANDATORIE: Adăugăm endpoint-ul lipsă cerut de Frontend
+@app.get("/api/market")
+def get_market():
+    return {
+        "market": "S&P 500",
+        "status": "OPEN" if datetime.utcnow().weekday() < 5 else "CLOSED",
+        "timezone": "EST",
+        "updated_at": datetime.utcnow().isoformat()
+    }
 
 @app.get("/api/sectors")
 def sectors():
@@ -102,14 +110,14 @@ def early_warning(min_score: int = Query(default=3, ge=1, le=4)):
     return {
         "signals": [], "count": 0, "scanned": len(tickers),
         "filter_status": get_filter_status()["status"], "min_score": min_score,
-        "scanned_at": datetime.utcnow().isoformat(), "message": "Apasă Scan Acum pentru a porni scanarea în RAM."
+        "scanned_at": datetime.utcnow().isoformat(), "message": "Apasă Scan Acum pentru a rula algoritmul."
     }
 
 @app.get("/api/early-warning/scan-now")
 def scan_now(background_tasks: BackgroundTasks):
     def do_scan():
         tickers = get_tickers_to_scan()
-        results = scan_all(min_score=2)  # Scanăm instaneu din RAM
+        results = scan_all(min_score=2) 
         
         base = {
             "signals": [r for r in results if r["score"] >= 2],
