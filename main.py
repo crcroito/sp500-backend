@@ -2,6 +2,8 @@ from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import requests
+import threading
+import time
 from datetime import datetime, timedelta
 import os
 from scanner import scan_all, get_tickers_to_scan, get_filter_status, start_background_filter, start_daily_refresh, POLYGON_API_KEY, BASE_URL
@@ -9,8 +11,17 @@ from emailer import send_alert_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_background_filter()
-    start_daily_refresh()
+    # Funcție care întârzie descărcarea grea ca să trecem de testul inițial Railway (Healthcheck)
+    def delayed_start():
+        print("Lifespan: Waiting 10 seconds for Railway Healthcheck to pass...")
+        time.sleep(10)
+        print("Lifespan: 10 seconds passed. Starting background tasks safely!")
+        start_background_filter()
+        start_daily_refresh()
+
+    # Pornim într-un fir de execuție separat ca să nu blocăm pornirea FastAPI
+    t = threading.Thread(target=delayed_start, daemon=True)
+    t.start()
     yield
 
 app = FastAPI(title="S&P 500 Intelligence API", lifespan=lifespan)
@@ -74,7 +85,6 @@ def root():
 def filter_status():
     return get_filter_status()
 
-# REPARARE MANDATORIE: Adăugăm endpoint-ul lipsă cerut de Frontend
 @app.get("/api/market")
 def get_market():
     return {
