@@ -47,29 +47,27 @@ SP500_ALL = [
     "WELL","WST","WDC","WY","WMB","WTW","WYNN","XEL","XYL","YUM","ZBRA","ZBH","ZTS","SMCI","CRWD","AXON"
 ]
 
-# Cache RAM Persistent Global
+# Set de verificare rapida O(1) in RAM
+SP500_SET = set(SP500_ALL)
+
 _cache = {
     "tickers": SP500_ALL,
     "updated_at": None,
     "status": "pending",
-    "global_market_data": {}  # Stocare RAM pentru prețurile istorice complete
+    "global_market_data": {}
 }
 
 def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
-    """
-    Descarcă datele agregate masive zilnice (Grouped Daily) de la Polygon.
-    Scurtează 500 de apeluri de rețea la doar ~45-50 de cereri rapide pentru zile comerciale.
-    """
     historical_data = {}
     current_date = datetime.now()
     dates_to_fetch = []
     
     while len(dates_to_fetch) < days_back:
         current_date -= timedelta(days=1)
-        if current_date.weekday() < 5:  # Doar zile de tranzacționare (Luni-Vineri)
+        if current_date.weekday() < 5:
             dates_to_fetch.append(current_date.strftime("%Y-%m-%d"))
             
-    dates_to_fetch.reverse()  # Sincronizare cronologică (vechi -> nou)
+    dates_to_fetch.reverse()
     logger.info(f"Downloading historical bulk data for {len(dates_to_fetch)} trading days...")
 
     for date_str in dates_to_fetch:
@@ -80,31 +78,38 @@ def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
                 results = res.json().get("results", [])
                 for bar in results:
                     ticker = bar.get("T")
-                    if ticker:
+                    # Filtram DOAR companiile din SP500 ca sa salvam spatiu si resurse
+                    if ticker in SP500_SET:
                         if ticker not in historical_data:
                             historical_data[ticker] = []
                         historical_data[ticker].append({
-                            "c": bar["c"],  # Close
-                            "v": bar["v"]   # Volume
+                            "c": bar["c"],
+                            "v": bar["v"]
                         })
-                        time.sleep(12)
+                
+                # PAUZA MUTATA CORECT: Aici asteapta 12 secunde intre ZILELE de tranzactionare
+                # pentru a respecta limita cheii Free (5 cereri / minut).
+                logger.info(f"Fetched data for {date_str}. Waiting for API limits...")
+                time.sleep(12)
+                
+            elif res.status_code == 429:
+                logger.warning("Rate limit hit in bulk load. Waiting 60 seconds...")
+                time.sleep(60)
         except Exception as e:
             logger.error(f"Error fetching bulk historical date {date_str}: {e}")
             
     return historical_data
 
 def _build_filtered_list():
-    """Funcție asincronă pornită în background la startup-ul aplicației."""
     logger.info("Starting background preload data process...")
     
-    # 1. Tragem istoricul complet în RAM
     try:
         _cache["global_market_data"] = get_global_market_history(days_back=65)
         logger.info("Successfully loaded historical market data into RAM cache.")
     except Exception as e:
         logger.error(f"Failed to preload history cache: {e}")
 
-    # 2. Rulăm filtrul de Market Cap secundar
+    # Pasul 2: Filtru secundar Market Cap (Optional, limitat la 30B$ pentru siguranta XTB)
     filtered = []
     min_cap = 30 * 1_000_000_000
     
@@ -118,12 +123,12 @@ def _build_filtered_list():
                 if market_cap >= min_cap:
                     filtered.append(ticker)
             elif res.status_code == 429:
+                logger.warning(f"Rate limit at ticker metadata {ticker}. Backing off 60s...")
                 time.sleep(60)
                 res = requests.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8)
                 if res.status_code == 200:
                     data = res.json().get("results", {})
-                    market_cap = data.get("market_cap", 0) or 0
-                    if market_cap >= min_cap:
+                    if (data.get("market_cap", 0) or 0) >= min_cap:
                         filtered.append(ticker)
             time.sleep(0.2)
         except Exception as e:
@@ -136,6 +141,7 @@ def _build_filtered_list():
     else:
         _cache["tickers"] = SP500_ALL
         _cache["status"] = "fallback"
+        
     _cache["updated_at"] = datetime.utcnow()
     logger.info(f"Filter process finished. Active tickers: {len(_cache['tickers'])}")
 
@@ -146,26 +152,20 @@ def start_background_filter():
     t.start()
 
 def _daily_refresh():
-    """Refresh zilnic al datelor - rulează la 22:00 ora UTC (după închiderea pieței US)."""
     logger.info("Starting daily data refresh...")
     _build_filtered_list()
     logger.info("Daily refresh complete.")
 
-
 def _schedule_runner():
-    """Thread care verifică și rulează task-urile schedule."""
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-
 def start_daily_refresh():
-    """Pornește scheduler-ul pentru refresh zilnic la 22:00 UTC."""
     schedule.every().day.at("22:00").do(_daily_refresh)
     t = threading.Thread(target=_schedule_runner, daemon=True)
     t.start()
     logger.info("Daily refresh scheduled at 22:00 UTC")
-
 
 def get_tickers_to_scan() -> List[str]:
     return _cache["tickers"] if _cache["tickers"] else SP500_ALL
@@ -178,7 +178,6 @@ def get_filter_status() -> dict:
     }
 
 def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
-    """Aplică algoritmul tău matematic direct pe array-ul din RAM (Fără rețea)."""
     try:
         if not bars or len(bars) < 15:
             return None
@@ -190,7 +189,6 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
         ma20 = sum(closes[-20:]) / min(20, len(closes))
         ma50 = sum(closes[-50:]) / min(50, len(closes)) if len(closes) >= 50 else ma20
 
-        # Semnal 1: Trend Strength
         trend_strength = False
         trend_note = ""
         if len(closes) >= 50:
@@ -202,7 +200,6 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
                 trend_strength = True
                 trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%) și MA50, trend ascendent"
 
-        # Semnal 2: Volume Anomaly
         volume_anomaly = False
         volume_note = ""
         if len(volumes) >= 20:
@@ -214,7 +211,6 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
                     volume_anomaly = True
                     volume_note = f"Volum nespecific pe termen scurt: 5z = {ratio:.1f}x față de medie 20z"
 
-        # Semnal 3: Relative Strength
         relative_strength = False
         rs_note = ""
         if len(closes) >= 20:
@@ -225,19 +221,28 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
                 relative_strength = True
                 rs_note = f"Impuls: +{ret5:.1f}% (5z), +{ret10:.1f}% (10z), +{ret20:.1f}% (20z)"
 
-        # Semnal 4: Institutional Accumulation
-        inst_accumulation = False
+        institutional_accumulation = False
         inst_note = ""
         if len(volumes) >= 30:
             recent10 = sum(volumes[-10:]) / 10
             prev20   = sum(volumes[-30:-10]) / 20
             if prev20 > 0 and recent10 / prev20 > 1.2:
                 if closes[-1] > closes[-10]:
-                    inst_accumulation = True
+                    institutional_accumulation = True
                     inst_note = f"Acumulare Fonduri: Volum 10z = {recent10/prev20:.1f}x mai mare cu preț în creștere"
 
-        signals = {"trend_strength": trend_strength, "volume_anomaly": volume_anomaly, "relative_strength": relative_strength, "inst_accumulation": inst_accumulation}
-        notes = {"trend_strength": trend_note, "volume_anomaly": volume_note, "relative_strength": rs_note, "inst_accumulation": inst_note}
+        signals = {
+            "trend_strength": trend_strength, 
+            "volume_anomaly": volume_anomaly, 
+            "relative_strength": relative_strength, 
+            "institutional_accumulation": institutional_accumulation
+        }
+        notes = {
+            "trend_strength": trend_note, 
+            "volume_anomaly": volume_note, 
+            "relative_strength": rs_note, 
+            "institutional_accumulation": inst_note
+        }
 
         score = sum(signals.values())
         chg1  = (closes[-1] / closes[-2]  - 1) * 100 if len(closes) >= 2  else 0
@@ -262,7 +267,6 @@ def scan_all(min_score: int = 3) -> List[Dict]:
         global_market_data = get_global_market_history(days_back=55)
         _cache["global_market_data"] = global_market_data
 
-    # Rulare instantanee în buclă locală
     for ticker in tickers:
         bars = global_market_data.get(ticker)
         if not bars:
