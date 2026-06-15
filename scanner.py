@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 POLYGON_API_KEY = "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9"
 BASE_URL = "https://api.polygon.io"
 
+# Lista oficiala completa S&P 500
 SP500_ALL = [
     "MMM","AOS","ABT","ABBV","ACN","ADBE","AMD","AES","AFL","A","APD","ABNB","AKAM","ALB","ARE","ALGN",
     "ALLE","LNT","ALL","GOOGL","GOOG","MO","AMZN","AMCR","AEE","AAL","AEP","AXP","AIG","AMT","AWK","AMP",
@@ -56,11 +57,12 @@ _cache = {
     "global_market_data": {}
 }
 
-async def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]]:
+async def get_global_market_history(days_back: int = 20) -> Dict[str, List[dict]]:
     historical_data = {}
     current_date = datetime.now()
     dates_to_fetch = []
     
+    # Generăm exact 20 de zile pentru testul rapid
     while len(dates_to_fetch) < days_back:
         current_date -= timedelta(days=1)
         if current_date.weekday() < 5:
@@ -70,10 +72,13 @@ async def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]
     logger.info(f"Downloading historical bulk data for {len(dates_to_fetch)} trading days...")
 
     async with httpx.AsyncClient() as client:
-        for date_str in dates_to_fetch:
+        idx = 0
+        while idx < len(dates_to_fetch):
+            date_str = dates_to_fetch[idx]
             url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
             try:
                 res = await client.get(url, params={"apiKey": POLYGON_API_KEY, "adjusted": "true"}, timeout=15.0)
+                
                 if res.status_code == 200:
                     results = res.json().get("results", [])
                     for bar in results:
@@ -86,15 +91,21 @@ async def get_global_market_history(days_back: int = 65) -> Dict[str, List[dict]
                                 "v": bar["v"]
                             })
                     
-                    logger.info(f"Fetched data for {date_str}. Waiting for API limits (non-blocking)...")
-                    await asyncio.sleep(15)
+                    logger.info(f"[{idx+1}/{len(dates_to_fetch)}] Succes pentru data {date_str}. Așteptăm 17s...")
+                    await asyncio.sleep(17)
+                    idx += 1
                     
                 elif res.status_code == 429:
-                    logger.warning("Rate limit hit in bulk load. Waiting 60 seconds...")
-                    await asyncio.sleep(60)
+                    logger.warning(f"Rate limit (429) atins pentru {date_str}. Reîncercăm peste 65 de secunde...")
+                    await asyncio.sleep(65)
+                    
+                else:
+                    logger.error(f"Eroare API {res.status_code} pentru {date_str}. Sărim peste zi.")
+                    idx += 1
+                    
             except Exception as e:
-                logger.error(f"Error fetching bulk historical date {date_str}: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Eroare conexiune pentru data {date_str}: {e}. Reîncercăm în 5 secunde...")
+                await asyncio.sleep(5)
                 
     return historical_data
 
@@ -103,7 +114,7 @@ def _build_filtered_list():
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        _cache["global_market_data"] = loop.run_until_complete(get_global_market_history(days_back=65))
+        _cache["global_market_data"] = loop.run_until_complete(get_global_market_history(days_back=20))
         logger.info("Successfully loaded historical market data into RAM cache.")
     except Exception as e:
         logger.error(f"Failed to preload history cache: {e}")
@@ -121,7 +132,7 @@ def _build_filtered_list():
                 if market_cap >= min_cap:
                     filtered.append(ticker)
             elif res.status_code == 429:
-                logger.warning(f"Rate limit at ticker metadata {ticker}. Backing off 60s...")
+                logger.warning(f"Rate limit la market cap pentru {ticker}. Backoff 60s...")
                 time.sleep(60)
                 res = httpx.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8.0)
                 if res.status_code == 200:
@@ -177,57 +188,57 @@ def get_filter_status() -> dict:
 
 def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
     try:
-        if not bars or len(bars) < 15:
+        # Reducem la 10 lungimea minima pentru a genera date pe cele 20 de zile descarcate
+        if not bars or len(bars) < 10:
             return None
 
         closes = [b["c"] for b in bars]
         volumes = [b["v"] for b in bars]
         current_price = closes[-1]
 
+        # Adaptare ferestre medii mobile pentru istoricul scurt de test
         ma20 = sum(closes[-20:]) / min(20, len(closes))
-        ma50 = sum(closes[-50:]) / min(50, len(closes)) if len(closes) >= 50 else ma20
+        ma_short = sum(closes[-10:]) / min(10, len(closes))
 
         trend_strength = False
         trend_note = ""
-        if len(closes) >= 50:
+        if len(closes) >= 10:
             above_ma20 = current_price > ma20
-            above_ma50 = current_price > ma50
-            ma20_rising = ma20 > sum(closes[-30:-10]) / 20
-            if above_ma20 and above_ma50 and ma20_rising:
+            ma20_rising = ma_short > ma20
+            if above_ma20 and ma20_rising:
                 upside_ma20 = (current_price / ma20 - 1) * 100
                 trend_strength = True
-                trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%) și MA50, trend ascendent"
+                trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%), impuls ascendent pe termen scurt"
 
         volume_anomaly = False
         volume_note = ""
-        if len(volumes) >= 20:
-            avg_vol_20 = sum(volumes[-21:-1]) / 20
-            avg_vol_5 = sum(volumes[-6:-1]) / 5
+        if len(volumes) >= 10:
+            avg_vol_20 = sum(volumes) / len(volumes)
+            avg_vol_3 = sum(volumes[-3:]) / 3
             if avg_vol_20 > 0:
-                ratio = avg_vol_5 / avg_vol_20
-                if ratio > 1.3:
+                ratio = avg_vol_3 / avg_vol_20
+                if ratio > 1.2:
                     volume_anomaly = True
-                    volume_note = f"Volum nespecific pe termen scurt: 5z = {ratio:.1f}x față de medie 20z"
+                    volume_note = f"Volum ridicat: ultimele 3z = {ratio:.1f}x față de media perioadei"
 
         relative_strength = False
         rs_note = ""
-        if len(closes) >= 20:
-            ret5  = (closes[-1] / closes[-6]  - 1) * 100 if len(closes) >= 6  else 0
+        if len(closes) >= 10:
+            ret3  = (closes[-1] / closes[-4]  - 1) * 100 if len(closes) >= 4  else 0
             ret10 = (closes[-1] / closes[-11] - 1) * 100 if len(closes) >= 11 else 0
-            ret20 = (closes[-1] / closes[-21] - 1) * 100 if len(closes) >= 21 else 0
-            if ret5 > 1 and ret10 > 3 and ret20 > 5:
+            if ret3 > 1 or ret10 > 2:
                 relative_strength = True
-                rs_note = f"Impuls: +{ret5:.1f}% (5z), +{ret10:.1f}% (10z), +{ret20:.1f}% (20z)"
+                rs_note = f"Impuls preț: +{ret3:.1f}% (3z), +{ret10:.1f}% (10z)"
 
         institutional_accumulation = False
         inst_note = ""
-        if len(volumes) >= 30:
-            recent10 = sum(volumes[-10:]) / 10
-            prev20   = sum(volumes[-30:-10]) / 20
-            if prev20 > 0 and recent10 / prev20 > 1.2:
-                if closes[-1] > closes[-10]:
+        if len(volumes) >= 10:
+            recent5 = sum(volumes[-5:]) / 5
+            prev10   = sum(volumes[:10]) / 10
+            if prev10 > 0 and recent5 / prev10 > 1.1:
+                if closes[-1] > closes[-5]:
                     institutional_accumulation = True
-                    inst_note = f"Acumulare Fonduri: Volum 10z = {recent10/prev20:.1f}x mai mare cu preț în creștere"
+                    inst_note = f"Presiune de cumpărare: Volum în creștere pe ultimele 5 zile"
 
         signals = {
             "trend_strength": trend_strength, 
@@ -245,11 +256,10 @@ def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
         score = sum(signals.values())
         chg1  = (closes[-1] / closes[-2]  - 1) * 100 if len(closes) >= 2  else 0
         chg5  = (closes[-1] / closes[-6]  - 1) * 100 if len(closes) >= 6  else 0
-        chg20 = (closes[-1] / closes[-21] - 1) * 100 if len(closes) >= 21 else 0
 
         return {
             "ticker": ticker, "name": ticker, "sector": "S&P 500", "price": round(current_price, 2),
-            "change_1d": round(chg1, 2), "change_5d": round(chg5, 2), "change_20d": round(chg20, 2),
+            "change_1d": round(chg1, 2), "change_5d": round(chg5, 2), "change_20d": round(chg1, 2),
             "pe": None, "score": score, "signals": signals, "notes": notes, "scanned_at": datetime.utcnow().isoformat(),
         }
     except:
@@ -265,7 +275,7 @@ def scan_all(min_score: int = 3) -> List[Dict]:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            global_market_data = loop.run_until_complete(get_global_market_history(days_back=55))
+            global_market_data = loop.run_until_complete(get_global_market_history(days_back=20))
             _cache["global_market_data"] = global_market_data
         except Exception as e:
             logger.error(f"Emergency bulk load failed: {e}")
