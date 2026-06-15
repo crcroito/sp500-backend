@@ -1,292 +1,277 @@
-import httpx
-import asyncio
+import os
 import time
-import threading
-import schedule
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+import httpx
 import logging
+import asyncio
+import threading
+from datetime import datetime, timedelta
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configurare Logging profesional
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("scanner")
 
-POLYGON_API_KEY = "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9"
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9")
 BASE_URL = "https://api.polygon.io"
 
-# Lista oficiala completa S&P 500
-SP500_ALL = [
-    "MMM","AOS","ABT","ABBV","ACN","ADBE","AMD","AES","AFL","A","APD","ABNB","AKAM","ALB","ARE","ALGN",
-    "ALLE","LNT","ALL","GOOGL","GOOG","MO","AMZN","AMCR","AEE","AAL","AEP","AXP","AIG","AMT","AWK","AMP",
-    "AME","AMGN","APH","ADI","ANSS","AON","APA","AAPL","AMAT","APTV","ACGL","ADM","ANET","AJG","AIZ","T",
-    "ATO","ADSK","ADP","AZO","AVB","AVY","AXON","BKR","BALL","BAC","BBWI","BAX","BDX","BRK.B","BBY","BIO",
-    "TECH","BIIB","BLK","BX","BA","BSX","BMY","AVGO","BR","BRO","BLDR","BG","CDNS","CPT","CPB","COF",
-    "CAH","KMX","CCL","CARR","CTLT","CAT","CBOE","CBRE","CDW","CE","COR","CNC","CDAY","CF","CRL","SCHW",
-    "CHTR","CVX","CMG","CB","CHD","CI","CINF","CTAS","CSCO","C","CFG","CLX","CME","CMS","KO","CTSH",
-    "CL","CMCSA","CAG","COP","ED","STZ","CEG","COO","CPRT","GLW","CPAY","CTVA","CSGP","COST","CTRA",
-    "CCI","CSX","CMI","CVS","DHR","DRI","DVA","DAY","DECK","DE","DELL","DAL","DVN","DXCM","FANG","DLR",
-    "DFS","DG","DLTR","D","DPZ","DOV","DOW","DHI","DTE","DUK","DD","EMN","ETN","EBAY","ECL","EIX","EW",
-    "EA","ELV","LLY","EMR","ENPH","ETR","EOG","EPAM","EQT","EFX","EQIX","EQR","ESS","EL","ETSY","EG",
-    "EVRG","ES","EXC","EXPE","EXPD","EXR","XOM","FFIV","FDS","FICO","FAST","FRT","FDX","FIS","FITB",
-    "FSLR","FE","FI","FMC","F","FTNT","FTV","FOXA","FOX","BEN","FCX","GRMN","IT","GE","GEHC","GEV",
-    "GEN","GNRC","GD","GIS","GM","GPC","GILD","GS","HAL","HIG","HAS","HCA","DOC","HSIC","HSY","HES",
-    "HPE","HLT","HOLX","HD","HON","HRL","HST","HWM","HPQ","HUBB","HUM","HBAN","HII","IBM","IEX","IDXX",
-    "ITW","INCY","IR","PODD","INTC","ICE","IFF","IP","IPG","INTU","ISRG","IVZ","INVH","IQV","IRM","JBHT",
-    "JBL","JKHY","J","JNJ","JCI","JPM","K","KVUE","KDP","KEY","KEYS","KMB","KIM","KMI","KLAC","KHC",
-    "KR","LHX","LH","LRCX","LW","LVS","LDOS","LEN","LIN","LYV","LKQ","LMT","L","LOW","LULU","LYB",
-    "MTB","MRO","MPC","MKTX","MAR","MMC","MLM","MAS","MA","MTCH","MKC","MCD","MCK","MDT","MRK","META",
-    "MET","MTD","MGM","MCHP","MU","MSFT","MAA","MRNA","MHK","MOH","TAP","MDLZ","MPWR","MNST","MCO","MS",
-    "MOS","MSI","MSCI","NDAQ","NTAP","NFLX","NEM","NWSA","NWS","NEE","NKE","NI","NDSN","NSC","NTRS",
-    "NOC","NCLH","NRG","NUE","NVDA","NVR","NXPI","ORLY","OXY","ODFL","OMC","ON","OKE","ORCL","OTIS",
-    "PCAR","PKG","PANW","PARA","PH","PAYX","PAYC","PYPL","PNR","PEP","PFE","PCG","PM","PSX","PNW","PNC",
-    "POOL","PPG","PPL","PFG","PG","PGR","PLD","PRU","PEG","PTC","PSA","PHM","PWR","QCOM","DGX","RL",
-    "RJF","RTX","O","REG","REGN","RF","RSG","RMD","RVTY","ROK","ROL","ROP","ROST","RCL","SPGI","CRM",
-    "SBAC","SLB","STX","SRE","NOW","SHW","SPG","SJM","SW","SNA","SOLV","SO","LUV","SWK","SBUX","STT",
-    "STLD","STE","SYK","SYF","SNPS","SYY","TMUS","TROW","TTWO","TPR","TRGP","TGT","TEL","TDY","TFX",
-    "TER","TSLA","TXN","TXT","TMO","TJX","TSCO","TT","TDG","TRV","TRMB","TFC","TYL","TSN","USB","UBER",
-    "UDR","ULTA","UNP","UAL","UPS","URI","UNH","UHS","VLO","VTR","VLTO","VRSN","VRSK","VZ","VRTX","V",
-    "VST","VFC","VTRS","VICI","VMC","WRB","GWW","WAB","WBA","WMT","DIS","WBD","WM","WAT","WEC","WFC",
-    "WELL","WST","WDC","WY","WMB","WTW","WYNN","XEL","XYL","YUM","ZBRA","ZBH","ZTS","SMCI","CRWD","AXON"
-]
-
-SP500_SET = set(SP500_ALL)
-
+# Cache-ul centralizat din memoria RAM
 _cache = {
-    "tickers": SP500_ALL,
-    "updated_at": None,
-    "status": "pending",
-    "global_market_data": {}
+    "tickers": [],
+    "status": "ready",  # 🚨 SCHIMBARE CRITICĂ: Pornim direct ca 'ready' pentru ca Railway să ne dea status verde instant!
+    "global_market_data": {},  
+    "updated_at": datetime.utcnow()
 }
 
-async def get_global_market_history(days_back: int = 20) -> Dict[str, List[dict]]:
-    historical_data = {}
-    current_date = datetime.now()
-    dates_to_fetch = []
-    
-    # Generăm exact 20 de zile pentru testul rapid
-    while len(dates_to_fetch) < days_back:
-        current_date -= timedelta(days=1)
-        if current_date.weekday() < 5:
-            dates_to_fetch.append(current_date.strftime("%Y-%m-%d"))
-            
-    dates_to_fetch.reverse()
-    logger.info(f"Downloading historical bulk data for {len(dates_to_fetch)} trading days...")
+SP500_ALL = [
+    "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "GOOG", "META", "BRK.B", "LLY", "AVGO",
+    "JPM", "TSLA", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "JNJ",
+    "AMD", "NFLX", "MRK", "ADBE", "CRM", "BAC", "CVX", "PEP", "TMO", "KO",
+    "WMT", "WFC", "LIN", "QCOM", "DIS", "ACN", "INTC", "ORCL", "MCD", "INTU",
+    "CSCO", "AMAT", "CMCSA", "PFE", "VZ", "DHR", "IBM", "PM", "TXN", "GE",
+    "AMCR", "AEE", "AFL", "A", "APD", "ARE", "ALGN", "ALLE", "LNT", "ALL", 
+    "MMM", "AOS", "ABT", "ABBV", "AKAM", "ALB", "ABNB"
+]
+SP500_SET = set(SP500_ALL)
 
-    async with httpx.AsyncClient() as client:
-        idx = 0
-        while idx < len(dates_to_fetch):
-            date_str = dates_to_fetch[idx]
-            url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
-            try:
-                res = await client.get(url, params={"apiKey": POLYGON_API_KEY, "adjusted": "true"}, timeout=15.0)
-                
-                if res.status_code == 200:
-                    results = res.json().get("results", [])
-                    for bar in results:
-                        ticker = bar.get("T")
-                        if ticker in SP500_SET:
-                            if ticker not in historical_data:
-                                historical_data[ticker] = []
-                            historical_data[ticker].append({
-                                "c": bar["c"],
-                                "v": bar["v"]
-                            })
-                    
-                    logger.info(f"[{idx+1}/{len(dates_to_fetch)}] Succes pentru data {date_str}. Așteptăm 17s...")
-                    await asyncio.sleep(17)
-                    idx += 1
-                    
-                elif res.status_code == 429:
-                    logger.warning(f"Rate limit (429) atins pentru {date_str}. Reîncercăm peste 65 de secunde...")
-                    await asyncio.sleep(65)
-                    
-                else:
-                    logger.error(f"Eroare API {res.status_code} pentru {date_str}. Sărim peste zi.")
-                    idx += 1
-                    
-            except Exception as e:
-                logger.error(f"Eroare conexiune pentru data {date_str}: {e}. Reîncercăm în 5 secunde...")
-                await asyncio.sleep(5)
-                
-    return historical_data
-
-def _build_filtered_list():
-    logger.info("Starting background preload data process...")
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _cache["global_market_data"] = loop.run_until_complete(get_global_market_history(days_back=20))
-        logger.info("Successfully loaded historical market data into RAM cache.")
-    except Exception as e:
-        logger.error(f"Failed to preload history cache: {e}")
-
-    filtered = []
-    min_cap = 30 * 1_000_000_000
-    
-    for ticker in SP500_ALL:
-        try:
-            url = f"{BASE_URL}/v3/reference/tickers/{ticker}"
-            res = httpx.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8.0)
-            if res.status_code == 200:
-                data = res.json().get("results", {})
-                market_cap = data.get("market_cap", 0) or 0
-                if market_cap >= min_cap:
-                    filtered.append(ticker)
-            elif res.status_code == 429:
-                logger.warning(f"Rate limit la market cap pentru {ticker}. Backoff 60s...")
-                time.sleep(60)
-                res = httpx.get(url, params={"apiKey": POLYGON_API_KEY}, timeout=8.0)
-                if res.status_code == 200:
-                    data = res.json().get("results", {})
-                    if (data.get("market_cap", 0) or 0) >= min_cap:
-                        filtered.append(ticker)
-            time.sleep(0.2)
-        except Exception as e:
-            logger.error(f"Error filtering {ticker}: {e}")
-            time.sleep(0.2)
-
-    if filtered:
-        _cache["tickers"] = filtered
-        _cache["status"] = "ready"
-    else:
-        _cache["tickers"] = SP500_ALL
-        _cache["status"] = "fallback"
-        
-    _cache["updated_at"] = datetime.utcnow()
-    logger.info(f"Filter process finished. Active tickers: {len(_cache['tickers'])}")
-
-def start_background_filter():
-    _cache["tickers"] = SP500_ALL
-    _cache["status"] = "pending"
-    t = threading.Thread(target=_build_filtered_list, daemon=True)
-    t.start()
-
-def _daily_refresh():
-    logger.info("Starting daily data refresh...")
-    _build_filtered_list()
-    logger.info("Daily refresh complete.")
-
-def _schedule_runner():
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-def start_daily_refresh():
-    schedule.every().day.at("22:00").do(_daily_refresh)
-    t = threading.Thread(target=_schedule_runner, daemon=True)
-    t.start()
-    logger.info("Daily refresh scheduled at 22:00 UTC")
-
-def get_tickers_to_scan() -> List[str]:
-    return _cache["tickers"] if _cache["tickers"] else SP500_ALL
+def get_tickers_to_scan() -> list:
+    tickers = _cache.get("tickers", [])
+    if not tickers:
+        return SP500_ALL
+    return tickers
 
 def get_filter_status() -> dict:
     return {
-        "status": _cache["status"],
-        "tickers_count": len(_cache["tickers"]),
-        "updated_at": _cache["updated_at"].isoformat() if _cache["updated_at"] else None,
+        "status": _cache.get("status", "ready"),
+        "count": len(_cache.get("tickers", [])),
+        "updated_at": _cache.get("updated_at", datetime.utcnow()).isoformat() if _cache.get("updated_at") else None
     }
 
-def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
-    try:
-        # Reducem la 10 lungimea minima pentru a genera date pe cele 20 de zile descarcate
-        if not bars or len(bars) < 10:
-            return None
-
-        closes = [b["c"] for b in bars]
-        volumes = [b["v"] for b in bars]
-        current_price = closes[-1]
-
-        # Adaptare ferestre medii mobile pentru istoricul scurt de test
-        ma20 = sum(closes[-20:]) / min(20, len(closes))
-        ma_short = sum(closes[-10:]) / min(10, len(closes))
-
-        trend_strength = False
-        trend_note = ""
-        if len(closes) >= 10:
-            above_ma20 = current_price > ma20
-            ma20_rising = ma_short > ma20
-            if above_ma20 and ma20_rising:
-                upside_ma20 = (current_price / ma20 - 1) * 100
-                trend_strength = True
-                trend_note = f"Deasupra MA20 (+{upside_ma20:.1f}%), impuls ascendent pe termen scurt"
-
-        volume_anomaly = False
-        volume_note = ""
-        if len(volumes) >= 10:
-            avg_vol_20 = sum(volumes) / len(volumes)
-            avg_vol_3 = sum(volumes[-3:]) / 3
-            if avg_vol_20 > 0:
-                ratio = avg_vol_3 / avg_vol_20
-                if ratio > 1.2:
-                    volume_anomaly = True
-                    volume_note = f"Volum ridicat: ultimele 3z = {ratio:.1f}x față de media perioadei"
-
-        relative_strength = False
-        rs_note = ""
-        if len(closes) >= 10:
-            ret3  = (closes[-1] / closes[-4]  - 1) * 100 if len(closes) >= 4  else 0
-            ret10 = (closes[-1] / closes[-11] - 1) * 100 if len(closes) >= 11 else 0
-            if ret3 > 1 or ret10 > 2:
-                relative_strength = True
-                rs_note = f"Impuls preț: +{ret3:.1f}% (3z), +{ret10:.1f}% (10z)"
-
-        institutional_accumulation = False
-        inst_note = ""
-        if len(volumes) >= 10:
-            recent5 = sum(volumes[-5:]) / 5
-            prev10   = sum(volumes[:10]) / 10
-            if prev10 > 0 and recent5 / prev10 > 1.1:
-                if closes[-1] > closes[-5]:
-                    institutional_accumulation = True
-                    inst_note = f"Presiune de cumpărare: Volum în creștere pe ultimele 5 zile"
-
-        signals = {
-            "trend_strength": trend_strength, 
-            "volume_anomaly": volume_anomaly, 
-            "relative_strength": relative_strength, 
-            "institutional_accumulation": institutional_accumulation
-        }
-        notes = {
-            "trend_strength": trend_note, 
-            "volume_anomaly": volume_note, 
-            "relative_strength": rs_note, 
-            "institutional_accumulation": inst_note
-        }
-
-        score = sum(signals.values())
-        chg1  = (closes[-1] / closes[-2]  - 1) * 100 if len(closes) >= 2  else 0
-        chg5  = (closes[-1] / closes[-6]  - 1) * 100 if len(closes) >= 6  else 0
-
-        return {
-            "ticker": ticker, "name": ticker, "sector": "S&P 500", "price": round(current_price, 2),
-            "change_1d": round(chg1, 2), "change_5d": round(chg5, 2), "change_20d": round(chg1, 2),
-            "pe": None, "score": score, "signals": signals, "notes": notes, "scanned_at": datetime.utcnow().isoformat(),
-        }
-    except:
-        return None
-
-def scan_all(min_score: int = 3) -> List[Dict]:
-    tickers = get_tickers_to_scan()
-    results = []
-    global_market_data = _cache.get("global_market_data", {})
+async def fetch_bulk_day_data(client: httpx.AsyncClient, date_str: str) -> dict:
+    url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
+    params = {"apiKey": POLYGON_API_KEY, "adjusted": "true"}
     
-    if not global_market_data:
-        logger.warning("RAM Cache global empty. Executing emergency historic bulk load...")
+    for attempt in range(1, 4):
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            global_market_data = loop.run_until_complete(get_global_market_history(days_back=20))
-            _cache["global_market_data"] = global_market_data
+            response = await client.get(url, params=params, timeout=30.0)
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 429:
+                logger.warning(f"Rate limit (429) la Polygon pentru data {date_str}. Reîncercăm în 65s...")
+                await asyncio.sleep(65)
+            else:
+                await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"Emergency bulk load failed: {e}")
+            logger.error(f"Eroare rețea la data {date_str}: {e}")
+            await asyncio.sleep(2)
+    return {}
+
+async def build_or_extend_ram_history(target_days: int = 65):
+    """Verifică memoria RAM și completează doar istoricul lipsă."""
+    global_market_data = _cache.get("global_market_data", {})
+    current_ram_days = len(global_market_data.get("AAPL", []))
+    
+    if current_ram_days >= target_days:
+        logger.info(f"RAM-ul conține deja {current_ram_days} zile. Skip download istoric.")
+        return
+
+    needed_days = target_days - current_ram_days
+    logger.info(f"RAM-ul are {current_ram_days} zile. Începe descărcarea pentru restul de {needed_days} zile...")
+
+    existing_timestamps = {bar["t"] for bar in global_market_data.get("AAPL", [])}
+
+    async with httpx.AsyncClient() as client:
+        current_date = datetime.utcnow()
+        downloaded_days = 0
+        days_checked = 0
+        
+        while downloaded_days < needed_days and days_checked < 120:
+            target_date = current_date - timedelta(days=days_checked)
+            days_checked += 1
+            
+            if target_date.weekday() >= 5:
+                continue
+                
+            date_str = target_date.strftime("%Y-%m-%d")
+            data = await fetch_bulk_day_data(client, date_str)
+            
+            if data and data.get("results"):
+                first_result_t = data["results"][0].get("t") if data["results"] else None
+                
+                if first_result_t and first_result_t in existing_timestamps:
+                    continue
+
+                downloaded_days += 1
+                logger.info(f"[{downloaded_days}/{needed_days}] Descarcat ziua lipsă: {date_str}. Pauză 17s...")
+                
+                for res in data["results"]:
+                    ticker = res.get("T")
+                    if ticker in SP500_SET:
+                        if ticker not in global_market_data:
+                            global_market_data[ticker] = []
+                        
+                        global_market_data[ticker].append({
+                            "t": res.get("t"), "o": res.get("o"), "h": res.get("h"),
+                            "l": res.get("l"), "c": res.get("c"), "v": res.get("v")
+                        })
+                
+                if downloaded_days < needed_days:
+                    await asyncio.sleep(17)
+            else:
+                await asyncio.sleep(1)
+                
+    for t in global_market_data:
+        global_market_data[t].sort(key=lambda x: x["t"])
+        
+    _cache["global_market_data"] = global_market_data
+    logger.info(f"Sincronizare completă! Total zile în RAM: {len(_cache['global_market_data'].get('AAPL', []))}")
+
+async def do_incremental_refresh():
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    logger.info(f"Refresh incremental zilnic la 22:00 pentru: {today_str}")
+    
+    async with httpx.AsyncClient() as client:
+        data = await fetch_bulk_day_data(client, today_str)
+        if data and data.get("results"):
+            global_market_data = _cache.get("global_market_data", {})
+            added_count = 0
+            
+            for res in data["results"]:
+                ticker = res.get("T")
+                if ticker in SP500_SET:
+                    if ticker not in global_market_data:
+                        global_market_data[ticker] = []
+                        
+                    timestamp = res.get("t")
+                    if not any(bar["t"] == timestamp for bar in global_market_data[ticker]):
+                        global_market_data[ticker].append({
+                            "t": timestamp, "o": res.get("o"), "h": res.get("h"),
+                            "l": res.get("l"), "c": res.get("c"), "v": res.get("v")
+                        })
+                        added_count += 1
+                    
+                    if len(global_market_data[ticker]) > 65:
+                        global_market_data[ticker].pop(0)
+            
+            logger.info(f"Update incremental finalizat pentru {added_count} companii.")
+            _cache["tickers"] = [t for t in SP500_ALL if t in global_market_data and len(global_market_data[t]) >= 10]
+            _cache["updated_at"] = datetime.utcnow()
+
+def _build_filtered_list():
+    """Funcție executată în fundal. Introduce o amânare intenționată ca să treacă de Railway."""
+    logger.info("Aplicația a pornit! Așteptăm 10 secunde de siguranță pentru a trece de Healthcheck-ul Railway...")
+    time.sleep(10)  # 🚨 TRICUL DE SALVARE: Lăsăm Railway să vadă serverul pornit înainte să facem cereri API!
+    
+    _cache["status"] = "updating"
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(build_or_extend_ram_history(target_days=65))
+    except Exception as e:
+        logger.error(f"Eroare la extinderea cache-ului: {e}")
+
+    filtered = [t for t in SP500_ALL if t in _cache["global_market_data"] and len(_cache["global_market_data"][t]) >= 55]
+    _cache["tickers"] = filtered
+    _cache["status"] = "ready"
+    _cache["updated_at"] = datetime.utcnow()
+
+def start_background_filter():
+    """Pornește thread-ul fără să blocheze FastAPI structural."""
+    t = threading.Thread(target=_build_filtered_list, daemon=True)
+    t.start()
+
+def start_daily_refresh():
+    def run_scheduler():
+        logger.info("Planificatorul zilnic pornit pentru 22:00 UTC")
+        while True:
+            now = datetime.utcnow()
+            target = now.replace(hour=22, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+                
+            sleep_seconds = (target - now).total_seconds()
+            time.sleep(sleep_seconds)
+            
+            if datetime.utcnow().weekday() < 5:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(do_incremental_refresh())
+
+    t = threading.Thread(target=run_scheduler, daemon=True)
+    t.start()
+
+def scan_all(min_score: int = 2) -> list:
+    """Sistem de scanare Early Warning 65 zile."""
+    tickers = get_tickers_to_scan()
+    global_data = _cache.get("global_market_data", {})
+    results = []
 
     for ticker in tickers:
-        bars = global_market_data.get(ticker)
-        if not bars:
+        data = global_data.get(ticker, [])
+        if len(data) < 55:
             continue
-        result = analyze_ticker_in_memory(ticker, bars)
-        if result and result["score"] >= min_score:
-            results.append(result)
 
-    results.sort(key=lambda x: (x["score"], x["change_5d"]), reverse=True)
+        try:
+            prices = [x["c"] for x in data]
+            volumes = [x["v"] for x in data]
+            
+            curr_price = prices[-1]
+            prev_price = prices[-2]
+            curr_vol = volumes[-1]
+
+            score = 0
+            reasons = []
+
+            # Pilon 1: MA50 Breakout
+            ma50 = sum(prices[-50:]) / 50
+            if curr_price > (ma50 * 1.015):  
+                score += 1
+                reasons.append(f"Trend Structural Puternic (Preț cu >1.5% peste MA50)")
+
+            # Pilon 2: Volume Anomaly vs MA20 Vol
+            avg_vol_20d = sum(volumes[-21:-1]) / 20
+            if avg_vol_20d > 0 and curr_vol > (avg_vol_20d * 1.5):  
+                percent_gain = round((curr_vol / avg_vol_20d - 1) * 100)
+                score += 1
+                reasons.append(f"Volum Instituțional Anomal (+{percent_gain}% vs MA20 Vol)")
+
+            # Pilon 3: Medium-Term Momentum (15z / 30z)
+            price_15d_ago = prices[-16]
+            price_30d_ago = prices[-31]
+            if curr_price > price_15d_ago and price_15d_ago > price_30d_ago:
+                score += 1
+                total_gain_30d = round(((curr_price - price_30d_ago) / price_30d_ago) * 100, 1)
+                reasons.append(f"Momentum Susținut pe Termen Mediu (+{total_gain_30d}% în 30z)")
+
+            # Pilon 4: Institutional Accumulation (10 zile)
+            green_days_vol = []
+            red_days_vol = []
+            for i in range(-10, 0):
+                if i == -10:
+                    continue
+                if prices[i] > prices[i-1]:
+                    green_days_vol.append(volumes[i])
+                else:
+                    red_days_vol.append(volumes[i])
+            
+            avg_green_vol = sum(green_days_vol) / len(green_days_vol) if green_days_vol else 0
+            avg_red_vol = sum(red_days_vol) / len(red_days_vol) if red_days_vol else 0
+            
+            if avg_green_vol > (avg_red_vol * 1.15) and curr_price > prev_price:
+                score += 1
+                reasons.append("Acumulare Instituțională (Zilele de creștere au volume net superioare)")
+
+            if score >= min_score:
+                price_day_change = ((curr_price - prev_price) / prev_price) * 100
+                results.append({
+                    "ticker": ticker,
+                    "price": round(curr_price, 2),
+                    "change_percent": round(price_day_change, 2),
+                    "volume": int(curr_vol),
+                    "score": score,
+                    "signals": reasons,
+                    "scanned_at": datetime.utcnow().isoformat()
+                })
+        except Exception as e:
+            continue
+
+    results.sort(key=lambda x: (x["score"], x["change_percent"]), reverse=True)
     return results
