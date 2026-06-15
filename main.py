@@ -1,38 +1,39 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from scanner import start_background_filter, start_daily_refresh, scan_all, get_filter_status
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 🚀 Acest cod se execută IMEDIAT DUPĂ ce serverul s-a legat de portul Railway
-    print("=== SERVER INSTALAT CU SUCCES IN RETEA ===")
-    print("Lansăm procesele de fundal pentru istoricul de 65 de zile...")
+    print("=== SERVER INITIALIZAT ===")
     start_background_filter()
     start_daily_refresh()
     yield
-    print("Serverul se închide...")
+    print("=== SERVER INCHIS ===")
 
-# Inițializăm FastAPI cu managerul de viață (lifespan)
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/")
-def read_root():
-    """Ruta principală care răspunde instant la ping-ul Railway."""
-    return {
-        "status": "online",
-        "message": "Early Warning Scanner API functionează corect.",
-        "endpoints": {
-            "scan": "/scan?min_score=2",
-            "status": "/status"
-        }
-    }
+# Permite comunicarea cu Vercel (Frontend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/status")
 def status_endpoint():
-    """Verifică starea curentă a cache-ului din RAM."""
     return get_filter_status()
 
 @app.get("/scan")
 def scan_endpoint(min_score: int = 2):
-    """Rulează algoritmul peste datele preîncărcate în RAM."""
     return scan_all(min_score=min_score)
+
+# Rute "Punte" pentru a nu mai avea erori 404 in frontend-ul vechi
+@app.get("/api/market")
+def market_bridge(): return {"status": "ok", "data": []}
+@app.get("/api/sectors")
+def sectors_bridge(): return []
+@app.get("/api/macro")
+def macro_bridge(): return {}
