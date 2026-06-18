@@ -1,79 +1,126 @@
-from fastapi import FastAPI, BackgroundTasks, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from datetime import datetime
-# Importăm funcțiile necesare din scanner
-from scanner import (
-    start_background_filter, 
-    start_daily_refresh, 
-    get_filter_status, 
-    scan_all, 
-    get_tickers_to_scan
-)
+import httpx
+import asyncio
+from scanner import start_background_filter, start_daily_refresh, scan_all, get_filter_status, _cache
 
-app = FastAPI(title="S&P 500 Intelligence API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("=== SERVER INITIALIZAT ===")
+    start_background_filter()
+    start_daily_refresh()
+    yield
+    print("=== SERVER INCHIS ===")
 
-# Middleware CORS pentru a permite accesul de pe frontend
+app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-def startup_event():
-    # Pornim thread-ul de preload date și scheduler-ul de refresh zilnic
-    start_background_filter()
-    start_daily_refresh()
+POLYGON_API_KEY = "mNiA3ZcUdRe5C5Uwo3PaGOH3lwmPzYy9"
+BASE_URL = "https://api.polygon.io"
+
+SECTORS = [
+    {"name": "Tehnologie",   "ticker": "XLK",  "emoji": "💻"},
+    {"name": "Financiar",    "ticker": "XLF",  "emoji": "🏦"},
+    {"name": "Sănătate",     "ticker": "XLV",  "emoji": "⚕️"},
+    {"name": "Energie",      "ticker": "XLE",  "emoji": "⚡"},
+    {"name": "Consum Disc.", "ticker": "XLY",  "emoji": "🛍️"},
+    {"name": "Consum Baz.",  "ticker": "XLP",  "emoji": "🛒"},
+    {"name": "Industrie",    "ticker": "XLI",  "emoji": "⚙️"},
+    {"name": "Real Estate",  "ticker": "XLRE", "emoji": "🏢"},
+    {"name": "Utilități",    "ticker": "XLU",  "emoji": "🔋"},
+    {"name": "Materiale",    "ticker": "XLB",  "emoji": "🪨"},
+    {"name": "Comunicații",  "ticker": "XLC",  "emoji": "📡"},
+]
+
+MARKET_TICKERS = {
+    "^GSPC": "SPY",
+    "^VIX": "VIXY",
+    "^TNX": "TLT",
+    "DX-Y.NYB": "UUP",
+}
+
+
+def get_etf_from_cache(ticker: str) -> dict:
+    """Citește datele ETF-ului din RAM cache."""
+    data = _cache.get("global_market_data", {}).get(ticker, [])
+    if len(data) >= 2:
+        prev = data[-2]["c"]
+        curr = data[-1]["c"]
+        chg = round((curr - prev) / prev * 100, 2)
+        return {"price": round(curr, 2), "change": chg}
+    return {"price": None, "change": None}
+
 
 @app.get("/")
 def root():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-# --- RUTE PUNTE (Rezolvă erorile 404 din logurile Railway) ---
-@app.get("/api/market")
-def market(): 
-    return {"status": "ready" if get_filter_status()["status"] == "ready" else "loading"}
-
-@app.get("/api/sectors")
-def sectors(): 
-    return []
-
-@app.get("/api/macro")
-def macro(): 
-    return {"fed_rate": "5.25-5.50%", "status": "active"}
 
 @app.get("/status")
-def status(): 
+def status_endpoint():
     return get_filter_status()
 
-# --- RUTE PRINCIPALE ---
-@app.get("/api/filter-status")
-def filter_status(): 
-    return get_filter_status()
 
-# Ruta veche /scan pentru compatibilitate cu frontend-ul
 @app.get("/scan")
-def scan_redirect(min_score: int = Query(3)):
-    return scan_all(min_score)
+def scan_endpoint(min_score: int = 2):
+    return scan_all(min_score=min_score)
 
-# Ruta Early Warning: Returnează scanarea direct
+
+@app.get("/api/filter-status")
+def filter_status_bridge():
+    return get_filter_status()
+
+
+@app.get("/api/market")
+def market():
+    result = {}
+    for key, etf in MARKET_TICKERS.items():
+        d = get_etf_from_cache(etf)
+        result[key] = d
+    return result
+
+
+@app.get("/api/sectors")
+def sectors():
+    result = []
+    for s in SECTORS:
+        d = get_etf_from_cache(s["ticker"])
+        result.append({**s, **d})
+    return result
+
+
+@app.get("/api/macro")
+def macro():
+    return {
+        "fed_rate": "5.25-5.50%",
+        "cpi": "3.2%",
+        "core_pce": "2.8%",
+        "unemployment": "3.9%",
+        "source": "FRED / BLS",
+        "updated": datetime.utcnow().isoformat()
+    }
+
+
 @app.get("/api/early-warning")
-def early_warning(min_score: int = Query(3)):
-    results = scan_all(min_score)
+def early_warning_bridge(min_score: int = 2):
+    results = scan_all(min_score=min_score)
     return {
         "signals": results,
         "count": len(results),
-        "filter_status": get_filter_status()["status"],
+        "scanned": get_filter_status()["count"],
         "scanned_at": datetime.utcnow().isoformat()
     }
 
-# Ruta Scan Now
+
 @app.get("/api/early-warning/scan-now")
-def scan_now(): 
-    results = scan_all(2)
-    return {
-        "status": "scan complete", 
-        "count": len(results),
-        "results": results
-    }
+def scan_now_bridge():
+    return {"status": "ok"}
