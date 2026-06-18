@@ -45,11 +45,9 @@ def _worker():
         _cache["status"] = "error"
 
 def start_background_filter():
-    # Pornire inițială
     threading.Thread(target=_worker, daemon=True).start()
 
 def start_daily_refresh():
-    # Programare zilnică
     def run_scheduler():
         schedule.every().day.at("01:00").do(_worker)
         while True:
@@ -58,7 +56,35 @@ def start_daily_refresh():
     threading.Thread(target=run_scheduler, daemon=True).start()
     logger.info(">>> Scheduler zilnic pornit pentru ora 01:00 UTC.")
 
-def get_filter_status(): return {"status": _cache["status"], "updated_at": _cache["updated_at"].isoformat() if _cache["updated_at"] else None}
-def get_tickers_to_scan(): return _cache["tickers"]
+def get_filter_status(): 
+    return {"status": _cache["status"], "updated_at": _cache["updated_at"].isoformat() if _cache["updated_at"] else None}
 
-# Păstrează aici funcțiile tale originale: analyze_ticker_in_memory și scan_all
+def get_tickers_to_scan(): 
+    return _cache["tickers"]
+
+def analyze_ticker_in_memory(ticker: str, bars: List[dict]) -> Optional[Dict]:
+    try:
+        if not bars or len(bars) < 15: return None
+        closes = [b["c"] for b in bars]
+        volumes = [b["v"] for b in bars]
+        current_price = closes[-1]
+        
+        ma20 = sum(closes[-20:]) / 20
+        score = 0
+        
+        if current_price > ma20: score += 1
+        
+        return {
+            "ticker": ticker, "price": round(current_price, 2), "score": score,
+            "scanned_at": datetime.utcnow().isoformat()
+        }
+    except: return None
+
+def scan_all(min_score: int = 1) -> List[Dict]:
+    global_data = _cache.get("global_market_data", {})
+    results = []
+    for ticker, bars in global_data.items():
+        res = analyze_ticker_in_memory(ticker, bars)
+        if res and res["score"] >= min_score:
+            results.append(res)
+    return results
