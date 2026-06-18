@@ -72,9 +72,27 @@ def get_polygon_etf(ticker: str) -> dict:
 def root():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
+@app.get("/status")
+def status():
+    fs = get_filter_status()
+    return {
+        "status": fs["status"],
+        "count": fs["tickers_count"],
+        "updated_at": fs["updated_at"],
+    }
+
 @app.get("/api/filter-status")
 def filter_status():
     return get_filter_status()
+
+@app.get("/api/market")
+def market():
+    MARKET_TICKERS = {"SPY": "S&P 500", "VIXY": "VIX", "TLT": "Bonds", "UUP": "USD"}
+    result = []
+    for ticker, name in MARKET_TICKERS.items():
+        q = get_polygon_etf(ticker)
+        result.append({"ticker": ticker, "name": name, **q})
+    return result
 
 @app.get("/api/sectors")
 def sectors():
