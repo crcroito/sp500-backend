@@ -130,7 +130,7 @@ async def build_or_extend_ram_history(target_days: int = 65):
     async with httpx.AsyncClient() as client:
         current_date = datetime.utcnow()
         downloaded_days = 0
-        days_checked = 0
+        days_checked = 1  # Pornim de la ieri (ziua 0 = azi, posibil incompletă/nedisponibilă încă)
         
         while downloaded_days < needed_days and days_checked < 120:
             target_date = current_date - timedelta(days=days_checked)
