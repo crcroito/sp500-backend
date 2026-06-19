@@ -21,15 +21,37 @@ _cache = {
     "updated_at": datetime.utcnow()
 }
 
-# Lista companiilor monitorizate (S&P 500 selectat)
+# Lista companiilor monitorizate: S&P 500 filtrat după capitalizare de piață > $30B
+# Sursă: Slickcharts (cumulative market cap), actualizat 19.06.2026
 SP500_ALL = [
-    "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "GOOG", "META", "BRK.B", "LLY", "AVGO",
-    "JPM", "TSLA", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "JNJ",
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "BRK.B", "LLY", "AVGO",
+    "TSLA", "JPM", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "JNJ",
     "AMD", "NFLX", "MRK", "ADBE", "CRM", "BAC", "CVX", "PEP", "TMO", "KO",
     "WMT", "WFC", "LIN", "QCOM", "DIS", "ACN", "INTC", "ORCL", "MCD", "INTU",
     "CSCO", "AMAT", "CMCSA", "PFE", "VZ", "DHR", "IBM", "PM", "TXN", "GE",
-    "AMCR", "AEE", "AFL", "A", "APD", "ARE", "ALGN", "ALLE", "LNT", "ALL", 
-    "MMM", "AOS", "ABT", "ABBV", "AKAM", "ALB", "ABNB"
+    "MU", "MS", "KLAC", "GS", "PLTR", "SNDK", "DELL", "GEV", "RTX", "C",
+    "PANW", "AXP", "STX", "ANET", "TMUS", "ADI", "VRT", "COF", "PH", "VRTX",
+    "FTNT", "NEM", "PWR", "CDNS", "MAR", "SO", "HWM", "NOW", "EQIX", "MDT",
+    "TT", "BNY", "FCX", "DUK", "GD", "CME", "PNC", "MCK", "UPS", "USB",
+    "CMI", "MNST", "CEG", "ADP", "JCI", "CSX", "WMB", "WM", "ELV", "AMT",
+    "SNPS", "KKR", "HCA", "SLB", "HOOD", "MMM", "DDOG", "MRSH", "MDLZ", "FDX",
+    "EMR", "ICE", "RCL", "CI", "HLT", "ABNB", "SHW", "MCO", "NOC", "MPWR",
+    "APO", "ROST", "NXPI", "MPC", "VLO", "ORLY", "COHR", "ECL", "ITW", "GM",
+    "EOG", "PSX", "LITE", "AON", "CL", "CRH", "KMI", "SPG", "CTAS", "NSC",
+    "AEP", "TDG", "BSX", "MSI", "WBD", "URI", "NKE", "FIX", "DASH", "TRV",
+    "DLR", "RSG", "TFC", "REGN", "HPE", "CIEN", "TER", "APD", "BKR", "PCAR",
+    "GWW", "TGT", "TEL", "NUE", "SRE", "AFL", "KEYS", "D", "F", "TRGP",
+    "O", "CARR", "LHX", "PSA", "MET", "OKE", "ALL", "OXY", "AJG", "COR",
+    "DAL", "FANG", "FAST", "CAH", "DVN", "AME", "MCHP", "ROK", "ODFL", "AZO",
+    "EA", "CTVA", "ETR", "NDAQ", "VST", "FITB", "XEL", "EW", "EBAY", "EXC",
+    "STT", "GRMN", "CVNA", "HUM", "ON", "WAB", "IDXX", "DHI", "MSCI", "KDP",
+    "YUM", "COIN", "ADSK", "XYZ", "CMG", "AMP", "VTR", "STLD", "JBL", "IBKR",
+    "CCL", "BDX", "CCI", "AIG", "LYV", "KR", "PEG", "ED", "TTWO", "CBRE",
+    "ADM", "SYY", "IRM", "PRU", "UAL", "PCG", "VMC", "WEC", "HSY", "A",
+    "PYPL", "EME", "PAYX", "AXON", "HIG", "HBAN", "WAT", "KVUE", "MLM", "MTB",
+    "KMB", "ROP", "LVS", "ZTS", "CASY", "HAL", "SATS", "EQT", "EL", "WDAY",
+    "NTRS", "CNC", "ACGL", "EXR", "NTAP", "Q", "CBOE", "VICI", "DTE", "ARES",
+    "IQV", "AEE", "RJF"
 ]
 SP500_SET = set(SP500_ALL)
 
@@ -39,6 +61,10 @@ ETF_TICKERS = [
     "SPY", "VIXY", "TLT", "UUP"
 ]
 ALL_TICKERS_SET = set(SP500_ALL) | set(ETF_TICKERS)
+
+# Pragul minim de zile istorice necesare pentru ca un ticker să fie inclus în scanare
+# (trebuie să coincidă cu pragul folosit în scan_all pentru calculul MA50)
+MIN_DAYS_REQUIRED = 55
 
 def get_tickers_to_scan() -> list:
     tickers = _cache.get("tickers", [])
@@ -66,11 +92,21 @@ async def fetch_bulk_day_data(client: httpx.AsyncClient, date_str: str) -> dict:
             elif response.status_code == 429:
                 logger.warning(f"Rate limit (429) detectat pentru data {date_str}. Așteptăm 65s...")
                 await asyncio.sleep(65)
+            elif response.status_code == 403:
+                # 403 înseamnă de obicei că datele pentru ziua respectivă nu sunt încă
+                # finalizate/disponibile pe planul curent. Așteptăm mult mai mult decât la 429.
+                logger.warning(
+                    f"403 Forbidden pentru data {date_str} (date probabil neprocesate încă). "
+                    f"Încercarea {attempt}/3, așteptăm 5 minute..."
+                )
+                await asyncio.sleep(300)
             else:
+                logger.warning(f"Status neașteptat {response.status_code} pentru {date_str}. Reîncercăm în 2s...")
                 await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"Eroare rețea la data {date_str}: {e}")
             await asyncio.sleep(2)
+    logger.error(f"Nu s-au putut obține date pentru {date_str} după 3 încercări. Ziua va fi omisă.")
     return {}
 
 async def build_or_extend_ram_history(target_days: int = 65):
@@ -140,8 +176,12 @@ async def build_or_extend_ram_history(target_days: int = 65):
     logger.info(f"Sincronizare finalizată! Istoric consolidat în RAM: {len(_cache['global_market_data'].get('AAPL', []))} zile.")
 
 async def do_incremental_refresh():
-    """Actualizează memoria RAM cu lumânarea zilei curente la închiderea pieței (ora 01:00 UTC)."""
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    """Actualizează memoria RAM cu lumânarea zilei de tranzacționare anterioare (rulează la 06:00 UTC, suficient după închiderea pieței)."""
+    target_date = datetime.utcnow() - timedelta(days=1)
+    # Dacă "ieri" UTC a fost weekend, mergem înapoi până la ultima zi lucrătoare
+    while target_date.weekday() >= 5:
+        target_date -= timedelta(days=1)
+    today_str = target_date.strftime("%Y-%m-%d")
     logger.info(f"Rulare actualizare incrementală zilnică: {today_str}")
     
     async with httpx.AsyncClient() as client:
@@ -170,7 +210,7 @@ async def do_incremental_refresh():
                         global_market_data[ticker].pop(0)
             
             logger.info(f"Actualizare incrementală completă. Adăugat date noi pentru {added_count} companii.")
-            _cache["tickers"] = [t for t in SP500_ALL if t in global_market_data and len(global_market_data[t]) >= 10]
+            _cache["tickers"] = [t for t in SP500_ALL if t in global_market_data and len(global_market_data[t]) >= MIN_DAYS_REQUIRED]
             _cache["updated_at"] = datetime.utcnow()
 
 def _build_filtered_list():
@@ -185,7 +225,7 @@ def _build_filtered_list():
         logger.error(f"Eroare în execuția threadului de sincronizare: {e}")
 
     # Permitem scanarea activă doar pentru companiile care au acumulat pragul minim de date de analiză
-    filtered = [t for t in SP500_ALL if t in _cache["global_market_data"] and len(_cache["global_market_data"][t]) >= 55]
+    filtered = [t for t in SP500_ALL if t in _cache["global_market_data"] and len(_cache["global_market_data"][t]) >= MIN_DAYS_REQUIRED]
     _cache["tickers"] = filtered
     _cache["status"] = "ready"
     _cache["updated_at"] = datetime.utcnow()
@@ -196,12 +236,12 @@ def start_background_filter():
     t.start()
 
 def start_daily_refresh():
-    """Planificatorul intern de timp (Cron-Job în RAM) pentru ora 01:00 UTC."""
+    """Planificatorul intern de timp (Cron-Job în RAM) pentru ora 06:00 UTC."""
     def run_scheduler():
-        logger.info("Planificator incremental inițializat (Așteaptă ora 01:00 UTC)")
+        logger.info("Planificator incremental inițializat (Așteaptă ora 06:00 UTC)")
         while True:
             now = datetime.utcnow()
-            target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+            target = now.replace(hour=6, minute=0, second=0, microsecond=0)
             if now >= target:
                 target += timedelta(days=1)
                 
@@ -209,7 +249,7 @@ def start_daily_refresh():
             time.sleep(sleep_seconds)
             
             if datetime.utcnow().weekday() < 5:
-                logger.info("Ceasul a atins 01:00 UTC. Rulăm adăugarea automată a lumânării de azi...")
+                logger.info("Ceasul a atins 06:00 UTC. Rulăm adăugarea automată a lumânării de azi...")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(do_incremental_refresh())
@@ -228,7 +268,7 @@ def scan_all(min_score: int = 2) -> list:
 
     for ticker in tickers:
         data = global_data.get(ticker, [])
-        if len(data) < 55:
+        if len(data) < MIN_DAYS_REQUIRED:
             continue
 
         try:
@@ -242,11 +282,17 @@ def scan_all(min_score: int = 2) -> list:
             score = 0
             reasons = []
 
-            # 🚨 PILON 1: Trend Strength - Breakout confirmat peste MA50 (Baza Instituțională)
+            # 🚨 PILON 1: Trend Strength - Confirmare structurală: preț peste MA20 ȘI MA50, cu MA20 în creștere
+            ma20 = sum(prices[-20:]) / 20
             ma50 = sum(prices[-50:]) / 50
-            if curr_price > (ma50 * 1.015):  # Minim 1.5% peste media mobilă de 50 de zile
+            ma20_10d_ago = sum(prices[-30:-10]) / 20
+            above_ma20 = curr_price > ma20
+            above_ma50 = curr_price > (ma50 * 1.015)  # minim 1.5% peste MA50
+            ma20_rising = ma20 > ma20_10d_ago
+            if above_ma20 and above_ma50 and ma20_rising:
+                upside_ma20 = (curr_price / ma20 - 1) * 100
                 score += 1
-                reasons.append(f"Trend Structural Puternic (Preț cu >1.5% peste MA50)")
+                reasons.append(f"Trend Structural Puternic (Peste MA20 +{upside_ma20:.1f}% și MA50, cu MA20 în creștere)")
 
             # 🚨 PILON 2: Volume Anomaly - Explozie de volum raportată la MA20 Volum (o lună de trading)
             avg_vol_20d = sum(volumes[-21:-1]) / 20
@@ -263,12 +309,10 @@ def scan_all(min_score: int = 2) -> list:
                 total_gain_30d = round(((curr_price - price_30d_ago) / price_30d_ago) * 100, 1)
                 reasons.append(f"Momentum Susținut pe Termen Mediu (+{total_gain_30d}% în 30z)")
 
-            # 🚨 PILON 4: Institutional Accumulation - Amprenta Smart Money pe ultimele 10 zile
+            # 🚨 PILON 4: Institutional Accumulation - Amprenta Smart Money pe ultimele 9 zile (vs ziua anterioară fiecăreia)
             green_days_vol = []
             red_days_vol = []
-            for i in range(-10, 0):
-                if i == -10:
-                    continue
+            for i in range(-9, 0):
                 if prices[i] > prices[i-1]:
                     green_days_vol.append(volumes[i])
                 else:
