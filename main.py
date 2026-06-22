@@ -1,16 +1,46 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 import asyncio
-from scanner import start_background_filter, start_daily_refresh, scan_all, get_filter_status, _cache
+import threading
+import time
+from scanner import start_background_filter, start_daily_refresh, scan_all, get_filter_status, _cache, SP500_ALL
+from gem_finder import build_gem_list, get_gems, get_gem_status
+
+def _start_gem_finder_background():
+    """Rulează prima scanare Gem Finder într-un thread separat, la pornirea serverului."""
+    t = threading.Thread(target=build_gem_list, args=(SP500_ALL,), daemon=True)
+    t.start()
+
+
+def _start_gem_finder_daily_scheduler():
+    """Scheduler propriu pentru Gem Finder la 07:00 UTC — decalat o oră față de
+    refresh-ul de date de piață (06:00 UTC) ca să nu ruleze simultan pe Railway."""
+    def run_scheduler():
+        while True:
+            now = datetime.utcnow()
+            target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            sleep_seconds = (target - now).total_seconds()
+            time.sleep(sleep_seconds)
+
+            if datetime.utcnow().weekday() < 5:  # doar zile lucrătoare
+                build_gem_list(SP500_ALL)
+
+    t = threading.Thread(target=run_scheduler, daemon=True)
+    t.start()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("=== SERVER INITIALIZAT ===")
     start_background_filter()
     start_daily_refresh()
+    _start_gem_finder_background()
+    _start_gem_finder_daily_scheduler()
     yield
     print("=== SERVER INCHIS ===")
 
@@ -124,3 +154,16 @@ def early_warning_bridge(min_score: int = 2):
 @app.get("/api/early-warning/scan-now")
 def scan_now_bridge():
     return {"status": "ok"}
+
+
+@app.get("/api/gem-finder")
+def gem_finder(min_score: int = 0):
+    return {
+        "gems": get_gems(min_score=min_score),
+        "status": get_gem_status(),
+    }
+
+
+@app.get("/api/gem-finder/status")
+def gem_finder_status():
+    return get_gem_status()
